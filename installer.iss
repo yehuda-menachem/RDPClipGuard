@@ -16,6 +16,8 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=installer_output
 OutputBaseFilename=RDPClipGuard_Setup
+SetupIconFile=Assets\app.ico
+UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -29,9 +31,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "bin\Release\net8.0-windows\win-x64\publish\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{commonstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "Start RDPClipGuard with Windows"
+Name: "{commonstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Comment: "Start RDPClipGuard with Windows"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch RDPClipGuard"; Flags: nowait postinstall skipifsilent

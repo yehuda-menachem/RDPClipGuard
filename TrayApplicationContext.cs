@@ -175,7 +175,28 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private static Icon CreateDefaultIcon()
     {
-        // Create a simple clipboard-themed icon programmatically
+        // Try to load the embedded icon resource first
+        try
+        {
+            var assembly = System.Reflection.Assembly.GetExecutingAssembly();
+            var resourceName = assembly.GetManifestResourceNames()
+                .FirstOrDefault(n => n.EndsWith("app.ico", StringComparison.OrdinalIgnoreCase));
+
+            if (resourceName != null)
+            {
+                using var stream = assembly.GetManifestResourceStream(resourceName);
+                if (stream != null)
+                {
+                    return new Icon(stream, 32, 32);
+                }
+            }
+        }
+        catch
+        {
+            // Fall through to programmatic icon
+        }
+
+        // Fallback: create icon programmatically
         var bmp = new Bitmap(32, 32);
         using (var g = Graphics.FromImage(bmp))
         {
