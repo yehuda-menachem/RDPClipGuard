@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace RDPClipGuard;
 
@@ -11,7 +12,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ClipboardMonitor _monitor;
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _copyCountItem;
+    private readonly ToolStripMenuItem _startupItem;
     private string _lastStatus = "Starting...";
+
+    private const string RegistryKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+    private const string AppName = "RDPClipGuard";
 
     public TrayApplicationContext()
     {
@@ -28,6 +33,20 @@ public sealed class TrayApplicationContext : ApplicationContext
             Enabled = false
         };
 
+        _startupItem = new ToolStripMenuItem("Start with Windows")
+        {
+            Checked = IsStartupEnabled(),
+            CheckOnClick = true
+        };
+        _startupItem.Click += OnToggleStartup;
+
+        // Auto-enable startup on first run
+        if (!IsStartupEnabled())
+        {
+            SetStartup(true);
+            _startupItem.Checked = true;
+        }
+
         var contextMenu = new ContextMenuStrip();
         contextMenu.Items.Add(new ToolStripMenuItem("RDPClipGuard v1.0") { Enabled = false, Font = new Font(contextMenu.Font, FontStyle.Bold) });
         contextMenu.Items.Add(new ToolStripSeparator());
@@ -35,6 +54,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         contextMenu.Items.Add(_copyCountItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Reset rdpclip Now", null, OnResetNow);
+        contextMenu.Items.Add(_startupItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Exit", null, OnExit);
 
@@ -115,6 +135,33 @@ public sealed class TrayApplicationContext : ApplicationContext
             });
         }
         catch { }
+    }
+
+    private void OnToggleStartup(object? sender, EventArgs e)
+    {
+        SetStartup(_startupItem.Checked);
+    }
+
+    private static bool IsStartupEnabled()
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RegistryKey, false);
+        return key?.GetValue(AppName) != null;
+    }
+
+    private static void SetStartup(bool enable)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(RegistryKey, true);
+        if (key == null) return;
+
+        if (enable)
+        {
+            var exePath = Application.ExecutablePath;
+            key.SetValue(AppName, $"\"{exePath}\"");
+        }
+        else
+        {
+            key.DeleteValue(AppName, false);
+        }
     }
 
     private void OnExit(object? sender, EventArgs e)
