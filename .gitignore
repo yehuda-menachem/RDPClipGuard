@@ -1,0 +1,6 @@
+bin/
+obj/
+installer_output/
+*.user
+*.suo
+.vs/
