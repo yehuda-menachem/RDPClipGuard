@@ -1,6 +1,12 @@
-# RDPClipGuard
+<p align="center">
+  <img src="Assets/logo.svg" alt="RDPClipGuard Logo" width="128" height="128">
+</p>
 
-A lightweight Windows system tray application that monitors clipboard activity and automatically resets the `rdpclip.exe` process to prevent RDP clipboard failures.
+<h1 align="center">RDPClipGuard</h1>
+
+<p align="center">
+  A lightweight Windows system tray application that monitors clipboard activity and automatically resets the <code>rdpclip.exe</code> process to prevent RDP clipboard failures.
+</p>
 
 ## Problem
 
