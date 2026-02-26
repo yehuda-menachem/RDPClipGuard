@@ -13,13 +13,18 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _statusItem;
     private readonly ToolStripMenuItem _copyCountItem;
     private readonly ToolStripMenuItem _startupItem;
+    private readonly ToolStripMenuItem _diagnosticItem;
     private string _lastStatus = "Starting...";
+    private readonly bool _isRemoteSession;
 
     private const string RegistryKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
     private const string AppName = "RDPClipGuard";
 
     public TrayApplicationContext()
     {
+        // Detect if running in RDP session
+        _isRemoteSession = SystemInformation.TerminalServerSession;
+
         _monitor = new ClipboardMonitor();
         _monitor.StatusChanged += OnStatusChanged;
 
@@ -40,6 +45,13 @@ public sealed class TrayApplicationContext : ApplicationContext
         };
         _startupItem.Click += OnToggleStartup;
 
+        _diagnosticItem = new ToolStripMenuItem("🔍 Diagnostic Mode")
+        {
+            Checked = false,
+            CheckOnClick = true
+        };
+        _diagnosticItem.Click += OnToggleDiagnostic;
+
         // Auto-enable startup on first run
         if (!IsStartupEnabled())
         {
@@ -48,13 +60,17 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
 
         var contextMenu = new ContextMenuStrip();
-        contextMenu.Items.Add(new ToolStripMenuItem("RDPClipGuard v1.0") { Enabled = false, Font = new Font(contextMenu.Font, FontStyle.Bold) });
+        string roleLabel = _isRemoteSession ? "[REMOTE]" : "[LOCAL]";
+        contextMenu.Items.Add(new ToolStripMenuItem($"RDPClipGuard v1.0 {roleLabel}") { Enabled = false, Font = new Font(contextMenu.Font, FontStyle.Bold) });
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_statusItem);
         contextMenu.Items.Add(_copyCountItem);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Reset rdpclip Now", null, OnResetNow);
         contextMenu.Items.Add(_startupItem);
+        contextMenu.Items.Add(_diagnosticItem);
+        contextMenu.Items.Add("Open Log File", null, OnOpenLogFile);
+        contextMenu.Items.Add("Open Log Folder", null, OnOpenLogFolder);
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Exit", null, OnExit);
 
@@ -161,6 +177,80 @@ public sealed class TrayApplicationContext : ApplicationContext
         else
         {
             key.DeleteValue(AppName, false);
+        }
+    }
+
+    private void OnToggleDiagnostic(object? sender, EventArgs e)
+    {
+        if (_diagnosticItem.Checked)
+        {
+            // Enable diagnostics
+            string role = _isRemoteSession ? "REMOTE" : "LOCAL";
+            _monitor.EnableDiagnostics(role);
+            _trayIcon.ShowBalloonTip(3000, "RDPClipGuard", "Diagnostic mode enabled", ToolTipIcon.Info);
+        }
+        else
+        {
+            // Disable diagnostics
+            _monitor.DisableDiagnostics();
+            _trayIcon.ShowBalloonTip(3000, "RDPClipGuard", "Diagnostic mode disabled", ToolTipIcon.Info);
+        }
+    }
+
+    private void OnOpenLogFile(object? sender, EventArgs e)
+    {
+        if (!_monitor.DiagnosticsEnabled)
+        {
+            MessageBox.Show("Diagnostic mode is not enabled. Enable it first from the menu.",
+                "No Log File", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
+        try
+        {
+            // This is a bit hacky - we store the logger in a static field temporarily
+            // Better approach would be to expose it from ClipboardMonitor
+            var baseDir = AppContext.BaseDirectory;
+            var logFiles = Directory.GetFiles(baseDir, "RDPClipGuard_Diagnostics_*.log")
+                .OrderByDescending(f => File.GetLastWriteTime(f))
+                .FirstOrDefault();
+
+            if (logFiles != null)
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = logFiles,
+                    UseShellExecute = true
+                });
+            }
+            else
+            {
+                MessageBox.Show("No diagnostic log file found.",
+                    "Log Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Error opening log file: {ex.Message}",
+                "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void OnOpenLogFolder(object? sender, EventArgs e)
+    {
+        try
+        {
+            var baseDir = AppContext.BaseDirectory;
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = baseDir,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"Error opening log folder: {ex.Message}",
+                "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 

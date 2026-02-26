@@ -13,9 +13,19 @@ public sealed class ClipboardMonitor : IDisposable
     private const int PollIntervalMs = 2000;
     private bool _disposed;
 
+    // Diagnostic features
+    private ClipboardListener? _clipboardListener;
+    private DiagnosticLogger? _diagnosticLogger;
+    private bool _diagnosticsEnabled;
+
     public event Action<string>? StatusChanged;
     public int CopyCount => _copyCount;
     public DateTime StartTime => _startTime;
+
+    /// <summary>
+    /// Gets whether diagnostic mode is currently enabled.
+    /// </summary>
+    public bool DiagnosticsEnabled => _diagnosticsEnabled;
 
     public ClipboardMonitor()
     {
@@ -34,6 +44,79 @@ public sealed class ClipboardMonitor : IDisposable
         RaiseStatus("Monitoring stopped");
     }
 
+    /// <summary>
+    /// Enables diagnostic logging mode.
+    /// </summary>
+    public void EnableDiagnostics(string? role = null)
+    {
+        if (_diagnosticsEnabled)
+            return;
+
+        _diagnosticsEnabled = true;
+        _diagnosticLogger = new DiagnosticLogger(role);
+
+        _diagnosticLogger.LogHeader("Diagnostics Enabled");
+        _diagnosticLogger.LogInfo($"Clipboard polling every {PollIntervalMs}ms");
+        _diagnosticLogger.LogInfo($"Auto-reset rdpclip every {ResetAfterCopies} copies");
+        _diagnosticLogger.Log($"Current copy count: {_copyCount}");
+        _diagnosticLogger.LogInfo(RdpClipHealth.GetDiagnosticSummary());
+
+        // Set up event-based clipboard listener for real-time notification
+        _clipboardListener = new ClipboardListener();
+        _clipboardListener.ClipboardChanged += OnClipboardListenerChanged;
+        _clipboardListener.Start();
+
+        _diagnosticLogger.LogInfo("Event-based clipboard listener started");
+        _diagnosticLogger.Log("");
+
+        RaiseStatus("Diagnostic mode enabled - logging to " + Path.GetFileName(_diagnosticLogger.LogFilePath));
+    }
+
+    /// <summary>
+    /// Disables diagnostic logging mode.
+    /// </summary>
+    public void DisableDiagnostics()
+    {
+        if (!_diagnosticsEnabled)
+            return;
+
+        _diagnosticsEnabled = false;
+
+        if (_clipboardListener != null)
+        {
+            _clipboardListener.ClipboardChanged -= OnClipboardListenerChanged;
+            _clipboardListener.Dispose();
+            _clipboardListener = null;
+        }
+
+        if (_diagnosticLogger != null)
+        {
+            _diagnosticLogger.LogInfo("Diagnostic mode disabled");
+            _diagnosticLogger.Dispose();
+            _diagnosticLogger = null;
+        }
+
+        RaiseStatus("Diagnostic mode disabled");
+    }
+
+    /// <summary>
+    /// Called when clipboard listener detects a change.
+    /// </summary>
+    private void OnClipboardListenerChanged(object? sender, ClipboardChangeEventArgs e)
+    {
+        if (_diagnosticLogger == null)
+            return;
+
+        var textPreview = e.ClipboardText != null
+            ? (e.ClipboardText.Length > 50 ? e.ClipboardText.Substring(0, 50) + "..." : e.ClipboardText)
+            : "(empty or non-text)";
+
+        _diagnosticLogger.LogDiagnostic(
+            $"Seq: {e.PreviousSequenceNumber}→{e.CurrentSequenceNumber} | " +
+            $"Formats: {e.FormatList} | Hash: {e.TextHash ?? "N/A"} | " +
+            $"Text: \"{textPreview}\"");
+    }
+
     private void CheckClipboard(object? state)
     {
         try
@@ -42,7 +125,9 @@ public sealed class ClipboardMonitor : IDisposable
 
             if (current == null)
             {
-                RaiseStatus($"Clipboard inaccessible after {_copyCount} copies - resetting rdpclip");
+                var msg = $"Clipboard inaccessible after {_copyCount} copies - resetting rdpclip";
+                RaiseStatus(msg);
+                _diagnosticLogger?.LogWarning(msg);
                 ResetRdpClip();
                 return;
             }
@@ -56,18 +141,30 @@ public sealed class ClipboardMonitor : IDisposable
                 var preview = current.Length > 50 ? current[..50] : current;
                 preview = preview.Replace("\n", " ").Replace("\r", "");
 
-                RaiseStatus($"Copy #{_copyCount} | {elapsed:F1} min | \"{preview}\"");
+                var status = $"Copy #{_copyCount} | {elapsed:F1} min | \"{preview}\"";
+                RaiseStatus(status);
+
+                // Log to diagnostics if enabled
+                if (_diagnosticsEnabled)
+                {
+                    _diagnosticLogger?.LogDiagnostic($"{status}");
+                    _diagnosticLogger?.LogInfo(RdpClipHealth.GetDiagnosticSummary());
+                }
 
                 if (_copyCount % ResetAfterCopies == 0)
                 {
-                    RaiseStatus($"Scheduled reset after {_copyCount} copies");
+                    var resetMsg = $"Scheduled reset after {_copyCount} copies";
+                    RaiseStatus(resetMsg);
+                    _diagnosticLogger?.LogInfo(resetMsg);
                     ResetRdpClip();
                 }
             }
         }
         catch (Exception ex)
         {
-            RaiseStatus($"Error: {ex.Message}");
+            var errorMsg = $"Error: {ex.Message}";
+            RaiseStatus(errorMsg);
+            _diagnosticLogger?.LogError(errorMsg);
         }
     }
 
@@ -98,13 +195,20 @@ public sealed class ClipboardMonitor : IDisposable
         return result;
     }
 
-    private static void ResetRdpClip()
+    private void ResetRdpClip()
     {
         try
         {
+            _diagnosticLogger?.LogInfo("Resetting rdpclip.exe...");
+
             foreach (var proc in Process.GetProcessesByName("rdpclip"))
             {
-                try { proc.Kill(); } catch { }
+                try
+                {
+                    _diagnosticLogger?.LogDiagnostic($"Killing rdpclip PID={proc.Id}");
+                    proc.Kill();
+                }
+                catch { }
             }
 
             Thread.Sleep(500);
@@ -115,13 +219,18 @@ public sealed class ClipboardMonitor : IDisposable
                 UseShellExecute = true,
                 WindowStyle = ProcessWindowStyle.Hidden
             };
-            Process.Start(psi);
+            var newProc = Process.Start(psi);
+            if (newProc != null)
+            {
+                _diagnosticLogger?.LogSuccess($"rdpclip restarted: PID={newProc.Id}");
+            }
 
             Thread.Sleep(500);
+            _diagnosticLogger?.LogInfo(RdpClipHealth.GetDiagnosticSummary());
         }
-        catch
+        catch (Exception ex)
         {
-            // Silently handle - will retry on next cycle
+            _diagnosticLogger?.LogError($"Failed to reset rdpclip: {ex.Message}");
         }
     }
 
@@ -135,7 +244,14 @@ public sealed class ClipboardMonitor : IDisposable
         if (!_disposed)
         {
             _disposed = true;
+
+            if (_diagnosticsEnabled)
+            {
+                DisableDiagnostics();
+            }
+
             _timer.Dispose();
         }
     }
 }
+
