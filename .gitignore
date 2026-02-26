@@ -4,3 +4,4 @@ installer_output/
 *.user
 *.suo
 .vs/
+RDPClipGuard_Diagnostics_*.log
