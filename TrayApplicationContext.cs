@@ -61,7 +61,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         var contextMenu = new ContextMenuStrip();
         string roleLabel = _isRemoteSession ? "[REMOTE]" : "[LOCAL]";
-        contextMenu.Items.Add(new ToolStripMenuItem($"RDPClipGuard v1.0 {roleLabel}") { Enabled = false, Font = new Font(contextMenu.Font, FontStyle.Bold) });
+        contextMenu.Items.Add(new ToolStripMenuItem($"RDPClipGuard v2.0 {roleLabel}") { Enabled = false, Font = new Font(contextMenu.Font, FontStyle.Bold) });
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_statusItem);
         contextMenu.Items.Add(_copyCountItem);
