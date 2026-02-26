@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>RDPClipGuard</AssemblyName>
     <RootNamespace>RDPClipGuard</RootNamespace>
-    <Version>1.0.0</Version>
+    <Version>2.0.0</Version>
     <Description>Monitors clipboard and automatically resets rdpclip when needed</Description>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <PublishSingleFile>true</PublishSingleFile>

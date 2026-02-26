@@ -2,7 +2,7 @@
 ; Build the app first: dotnet publish -c Release
 
 #define MyAppName "RDPClipGuard"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "2.0.0"
 #define MyAppPublisher "RDPClipGuard"
 #define MyAppExeName "RDPClipGuard.exe"
 
