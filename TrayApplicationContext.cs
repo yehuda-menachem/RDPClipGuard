@@ -166,8 +166,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>
-    /// Waits for rdpclip.exe to be in a responsive state.
-    /// This prevents clipboard access before rdpclip has fully initialized.
+    /// Waits for rdpclip.exe to be fully operational (responsive AND clipboard accessible).
+    /// This prevents clipboard deadlock by ensuring rdpclip has fully initialized.
     /// </summary>
     private static void WaitForRdpClipReady(int timeoutMs)
     {
@@ -175,14 +175,47 @@ public sealed class TrayApplicationContext : ApplicationContext
         while ((DateTime.UtcNow - startTime).TotalMilliseconds < timeoutMs)
         {
             var processes = System.Diagnostics.Process.GetProcessesByName("rdpclip");
-            if (processes.Length > 0 && processes[0].Responding)
+
+            // Check if process exists and is responding
+            if (processes.Length == 0 || !processes[0].Responding)
             {
-                // rdpclip is running and responding
+                Thread.Sleep(100);
+                continue;
+            }
+
+            // Process is responding, but check if clipboard is actually accessible
+            // This is critical - process.Responding != clipboard ready
+            if (CanAccessClipboard())
+            {
+                // rdpclip is running, responding, AND clipboard is accessible
                 return;
             }
+
             Thread.Sleep(100);
         }
         // Timeout reached - proceed anyway
+    }
+
+    /// <summary>
+    /// Tests if clipboard is accessible without blocking.
+    /// Returns true only if clipboard can be opened and closed successfully.
+    /// </summary>
+    private static bool CanAccessClipboard()
+    {
+        try
+        {
+            // Try to open clipboard - if rdpclip is still initializing, this will fail
+            if (!NativeMethods.OpenClipboard(IntPtr.Zero))
+                return false;
+
+            // Successfully opened, close it
+            NativeMethods.CloseClipboard();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private void OnToggleStartup(object? sender, EventArgs e)
