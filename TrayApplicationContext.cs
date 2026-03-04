@@ -139,19 +139,50 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         try
         {
+            // Kill existing rdpclip processes
             foreach (var proc in System.Diagnostics.Process.GetProcessesByName("rdpclip"))
             {
                 try { proc.Kill(); } catch { }
             }
+
+            // Wait for process to fully exit
             Thread.Sleep(500);
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+
+            // Start new rdpclip.exe
+            var startInfo = new System.Diagnostics.ProcessStartInfo
             {
                 FileName = "rdpclip.exe",
                 UseShellExecute = true,
                 WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden
-            });
+            };
+
+            System.Diagnostics.Process.Start(startInfo);
+
+            // Wait for rdpclip to be responsive (not just started)
+            // This prevents clipboard deadlock during startup
+            WaitForRdpClipReady(5000); // 5 second timeout
         }
         catch { }
+    }
+
+    /// <summary>
+    /// Waits for rdpclip.exe to be in a responsive state.
+    /// This prevents clipboard access before rdpclip has fully initialized.
+    /// </summary>
+    private static void WaitForRdpClipReady(int timeoutMs)
+    {
+        var startTime = DateTime.UtcNow;
+        while ((DateTime.UtcNow - startTime).TotalMilliseconds < timeoutMs)
+        {
+            var processes = System.Diagnostics.Process.GetProcessesByName("rdpclip");
+            if (processes.Length > 0 && processes[0].Responding)
+            {
+                // rdpclip is running and responding
+                return;
+            }
+            Thread.Sleep(100);
+        }
+        // Timeout reached - proceed anyway
     }
 
     private void OnToggleStartup(object? sender, EventArgs e)

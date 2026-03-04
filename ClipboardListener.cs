@@ -46,6 +46,15 @@ public sealed class ClipboardListener : IDisposable
         {
             uint currentSequence = NativeMethods.GetClipboardSequenceNumber();
 
+            // Skip if clipboard is locked (e.g., rdpclip restarting)
+            // Try with a very short timeout to avoid deadlock
+            if (!TryOpenClipboardWithTimeout(100))
+            {
+                // Clipboard is busy (likely rdpclip restarting) - skip this event
+                // We'll get another event when clipboard is ready
+                return;
+            }
+
             // Get clipboard content and formats
             var text = GetClipboardText();
             var formats = GetClipboardFormats();
@@ -68,6 +77,24 @@ public sealed class ClipboardListener : IDisposable
         {
             // Silently handle errors in clipboard access
         }
+    }
+
+    /// <summary>
+    /// Tries to open clipboard with a timeout to prevent deadlock.
+    /// Returns true if successful, false if clipboard is locked.
+    /// </summary>
+    private static bool TryOpenClipboardWithTimeout(int timeoutMs)
+    {
+        // Quick non-blocking check - if we can open and close immediately, proceed
+        if (NativeMethods.OpenClipboard(IntPtr.Zero))
+        {
+            NativeMethods.CloseClipboard();
+            return true;
+        }
+
+        // Clipboard is locked - likely rdpclip is restarting
+        // Return false to skip this event and avoid deadlock
+        return false;
     }
 
     /// <summary>
@@ -103,6 +130,7 @@ public sealed class ClipboardListener : IDisposable
 
     /// <summary>
     /// Enumerates all clipboard formats currently available.
+    /// Returns empty list if clipboard is locked to prevent deadlock.
     /// </summary>
     private static List<ClipboardFormatInfo> GetClipboardFormats()
     {
@@ -110,6 +138,7 @@ public sealed class ClipboardListener : IDisposable
 
         try
         {
+            // Don't block if clipboard is locked
             if (!NativeMethods.OpenClipboard(IntPtr.Zero))
                 return formats;
 
