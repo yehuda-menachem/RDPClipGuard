@@ -17,9 +17,9 @@ public sealed class DiagnosticLogger : IDisposable
 
     public DiagnosticLogger(string? role = null)
     {
-        // Use AppContext.BaseDirectory for single-file publish compatibility
-        // This works with both regular and single-file published apps
-        _logDirectory = AppContext.BaseDirectory;
+        // Try AppContext.BaseDirectory first (works with single-file publish)
+        // If not writable, fall back to AppData
+        _logDirectory = DetermineLogDirectory();
         _logPathBase = Path.Combine(_logDirectory, "RDPClipGuard_Diagnostics");
         _sessionStartTime = DateTime.Now;
         _currentLogFile = GetLogFilePath();
@@ -29,6 +29,65 @@ public sealed class DiagnosticLogger : IDisposable
         var displayRole = role ?? detectedRole;
 
         WriteInitialHeader(displayRole);
+    }
+
+    /// <summary>
+    /// Determines the appropriate log directory, trying AppContext.BaseDirectory first,
+    /// then falling back to AppData if not writable (e.g., when installed in Program Files).
+    /// </summary>
+    private string DetermineLogDirectory()
+    {
+        // Try the installation directory first
+        string primaryDir = AppContext.BaseDirectory;
+        if (IsDirectoryWritable(primaryDir))
+        {
+            return primaryDir;
+        }
+
+        // Fall back to AppData\RDPClipGuard if primary directory is not writable
+        string appDataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "RDPClipGuard");
+
+        // Create AppData directory if it doesn't exist
+        if (!Directory.Exists(appDataDir))
+        {
+            try
+            {
+                Directory.CreateDirectory(appDataDir);
+            }
+            catch
+            {
+                // If AppData creation fails, try LocalAppData as last resort
+                appDataDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "RDPClipGuard");
+                Directory.CreateDirectory(appDataDir);
+            }
+        }
+
+        return appDataDir;
+    }
+
+    /// <summary>
+    /// Checks if a directory exists and is writable by attempting to create a test file.
+    /// </summary>
+    private bool IsDirectoryWritable(string directoryPath)
+    {
+        try
+        {
+            if (!Directory.Exists(directoryPath))
+                return false;
+
+            string testFilePath = Path.Combine(directoryPath, ".rdpclipguard_write_test");
+            File.WriteAllText(testFilePath, "test");
+            File.Delete(testFilePath);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

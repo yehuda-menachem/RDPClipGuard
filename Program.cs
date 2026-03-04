@@ -11,27 +11,45 @@ static class Program
     {
         // Ensure only one instance runs at a time
         const string mutexName = "Global\\RDPClipGuard_SingleInstance";
-        _mutex = new Mutex(true, mutexName, out bool createdNew);
+        _mutex = new Mutex(false, mutexName, out bool createdNew);
 
-        if (!createdNew)
+        // If we created the mutex, we own it - no need to wait
+        // If we didn't create it, try to acquire it with a timeout
+        bool canRun = createdNew || _mutex.WaitOne(3000);
+
+        if (!canRun)
         {
             MessageBox.Show(
                 "RDPClipGuard is already running.\nCheck the system tray icons.",
                 "RDPClipGuard",
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Information);
+            _mutex?.Dispose();
             return;
         }
 
         try
         {
+            // If we waited for the mutex, we now own it
+            if (!createdNew)
+            {
+                _mutex.ReleaseMutex();
+            }
+
             ApplicationConfiguration.Initialize();
             Application.Run(new TrayApplicationContext());
         }
         finally
         {
-            _mutex.ReleaseMutex();
-            _mutex.Dispose();
+            try
+            {
+                _mutex.ReleaseMutex();
+            }
+            catch
+            {
+                // Mutex may have already been released
+            }
+            _mutex?.Dispose();
         }
     }
 }
