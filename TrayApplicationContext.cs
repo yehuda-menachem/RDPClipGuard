@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Linq;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -186,14 +187,66 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             // Enable diagnostics
             string role = _isRemoteSession ? "REMOTE" : "LOCAL";
-            _monitor.EnableDiagnostics(role);
-            _trayIcon.ShowBalloonTip(3000, "RDPClipGuard", "Diagnostic mode enabled", ToolTipIcon.Info);
+            try
+            {
+                _monitor.EnableDiagnostics(role);
+
+                // Get the log file info for the notification
+                var logPath = GetLatestLogFilePath();
+                if (logPath != null)
+                {
+                    var logFileName = Path.GetFileName(logPath);
+                    _trayIcon.ShowBalloonTip(3000, "RDPClipGuard",
+                        $"Diagnostic mode enabled\nLogging to: {logFileName}", ToolTipIcon.Info);
+                }
+                else
+                {
+                    _trayIcon.ShowBalloonTip(3000, "RDPClipGuard",
+                        "Diagnostic mode enabled (but could not determine log path)", ToolTipIcon.Warning);
+                }
+            }
+            catch (Exception ex)
+            {
+                _trayIcon.ShowBalloonTip(3000, "RDPClipGuard",
+                    $"Error enabling diagnostic mode: {ex.Message}", ToolTipIcon.Error);
+            }
         }
         else
         {
             // Disable diagnostics
             _monitor.DisableDiagnostics();
             _trayIcon.ShowBalloonTip(3000, "RDPClipGuard", "Diagnostic mode disabled", ToolTipIcon.Info);
+        }
+    }
+
+    private string? GetLatestLogFilePath()
+    {
+        try
+        {
+            // Check AppData first
+            string appDataDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "RDPClipGuard");
+
+            if (Directory.Exists(appDataDir))
+            {
+                var logFiles = Directory.GetFiles(appDataDir, "RDPClipGuard_Diagnostics_*.log")
+                    .OrderByDescending(f => File.GetLastWriteTime(f))
+                    .FirstOrDefault();
+                if (logFiles != null)
+                    return logFiles;
+            }
+
+            // Fall back to AppContext.BaseDirectory
+            var baseDir = AppContext.BaseDirectory;
+            var baseLogFiles = Directory.GetFiles(baseDir, "RDPClipGuard_Diagnostics_*.log")
+                .OrderByDescending(f => File.GetLastWriteTime(f))
+                .FirstOrDefault();
+            return baseLogFiles;
+        }
+        catch
+        {
+            return null;
         }
     }
 
