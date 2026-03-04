@@ -55,6 +55,14 @@ public sealed class ClipboardListener : IDisposable
                 return;
             }
 
+            // Skip file drops - they have complex formats that can lock clipboard for a long time
+            // This prevents deadlock when copying large files or many files
+            if (IsFileDropClipboard())
+            {
+                // File drop detected - skip to avoid clipboard lock during file processing
+                return;
+            }
+
             // Get clipboard content and formats
             var text = GetClipboardText();
             var formats = GetClipboardFormats();
@@ -94,6 +102,45 @@ public sealed class ClipboardListener : IDisposable
 
         // Clipboard is locked - likely rdpclip is restarting
         // Return false to skip this event and avoid deadlock
+        return false;
+    }
+
+    /// <summary>
+    /// Checks if the clipboard contains a file drop (CF_HDROP).
+    /// File drops have complex formats that can lock clipboard for a long time,
+    /// especially when copying large files. We skip these to avoid deadlock.
+    /// </summary>
+    private static bool IsFileDropClipboard()
+    {
+        try
+        {
+            if (!NativeMethods.OpenClipboard(IntPtr.Zero))
+                return false;
+
+            try
+            {
+                // CF_HDROP = 15 (File drop format)
+                const uint CF_HDROP = 15;
+                uint format = 0;
+                while ((format = NativeMethods.EnumClipboardFormats(format)) != 0)
+                {
+                    if (format == CF_HDROP)
+                    {
+                        // File drop detected
+                        return true;
+                    }
+                }
+            }
+            finally
+            {
+                NativeMethods.CloseClipboard();
+            }
+        }
+        catch
+        {
+            // If we can't check, assume not a file drop
+        }
+
         return false;
     }
 
