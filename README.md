@@ -16,11 +16,13 @@ When using Remote Desktop (RDP), the clipboard often stops working after multipl
 
 RDPClipGuard runs silently in the system tray and:
 
-- **Monitors clipboard** every 2 seconds for new copy operations
+- **Monitors clipboard** every 2 seconds for new copy operations (with event-based real-time detection)
 - **Automatically resets `rdpclip.exe`** every 7 copy operations (preventive maintenance)
 - **Detects clipboard failures** and immediately resets `rdpclip.exe` when the clipboard becomes inaccessible
-- **Prevents duplicate instances** - only one instance can run at a time
+- **Prevents duplicate instances** - only one instance can run at a time (with smart mutex timeout handling)
 - **Starts with Windows** (optional, configured during installation)
+- **Diagnostic Mode** - detailed logging of clipboard activity, rdpclip health, and RDP sync issues
+- **Avoids clipboard deadlock** - skips file drops and validates rdpclip is fully operational before resuming
 
 ## System Tray Features
 
@@ -28,7 +30,32 @@ RDPClipGuard runs silently in the system tray and:
 - **Right-click** context menu:
   - View copy count and status
   - **Reset rdpclip Now** - manually trigger an immediate reset
+  - **Start with Windows** - toggle auto-start on system boot
+  - **🔍 Diagnostic Mode** - enable detailed logging (see [Diagnostic Mode](#diagnostic-mode))
+  - **Open Log File** - view the latest diagnostic log
+  - **Open Log Folder** - browse all diagnostic logs
   - **Exit** - close the application
+
+## Diagnostic Mode
+
+When troubleshooting RDP clipboard issues, enable **Diagnostic Mode** from the tray menu:
+
+- **Real-time logging** of all clipboard events with timestamps
+- **Sequence tracking** - detects if clipboard changes are synced between machines
+- **rdpclip.exe health monitoring** - tracks process health, memory usage, handle count
+- **Hash comparison** - identifies when LOCAL and REMOTE clipboard contents match
+- **Automatic log rotation** - keeps the 5 most recent logs
+
+Logs are saved to:
+- **LOCAL:** `%APPDATA%\RDPClipGuard\RDPClipGuard_Diagnostics_*.log`
+- **REMOTE:** `%APPDATA%\RDPClipGuard\RDPClipGuard_Diagnostics_*.log`
+
+Example diagnostic output:
+```
+[12:34:56.789] [DIAG] 🔍 Seq: 142→143 | Formats: CF_UNICODETEXT, CF_TEXT | Hash: a591a6d4 | Text: "Hello World"
+[12:34:56.791] [INFO] ℹ️  rdpclip: PID=1234 | 4MB | Handles=89 | ✓ Responding | Uptime=5.2min
+[12:34:57.800] [OK] ✅ Hash matches LOCAL machine ✓
+```
 
 ## Installation
 
