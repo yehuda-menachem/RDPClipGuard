@@ -52,6 +52,8 @@ public sealed class ClipboardListener : IDisposable
             {
                 // Clipboard is busy (likely rdpclip restarting) - skip this event
                 // We'll get another event when clipboard is ready
+                // Log this as a skipped event for diagnostics
+                System.Diagnostics.Debug.WriteLine($"[ClipboardListener] SKIPPED: Clipboard locked - Seq {_lastSequenceNumber}→{currentSequence}");
                 return;
             }
 

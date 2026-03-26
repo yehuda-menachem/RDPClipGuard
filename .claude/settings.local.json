@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet build:*)",
+      "Bash(dotnet publish:*)",
+      "Bash(\"C:\\\\Program Files \\(x86\\)\\\\Inno Setup 6\\\\ISCC.exe\" \"C:\\\\programming\\\\RDPClipGuard\\\\installer.iss\")",
+      "Read(//c/Program Files \\(x86\\)/**)",
+      "Read(//c/Program Files/**)",
+      "Bash(cmd.exe /c 'dir \"\"C:\\\\Program Files \\(x86\\)\\\\Inno Setup 6\\\\\"\" 2>&1')",
+      "Bash(cmd.exe /c 'where ISCC.exe 2>&1 & dir \"\"C:\\\\Program Files \\(x86\\)\"\" /b 2>&1 | findstr -i inno')",
+      "Bash(cmd.exe /c 'dir \"\"C:\\\\Program Files \\(x86\\)\\\\\"\" /b 2>&1')"
+    ]
+  }
+}
