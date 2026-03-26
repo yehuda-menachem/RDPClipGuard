@@ -61,7 +61,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
 
         var contextMenu = new ContextMenuStrip();
-        string roleLabel = _isRemoteSession ? "[REMOTE]" : "[LOCAL]";
+        string roleLabel = _isRemoteSession ? "[REMOTE]" : (_monitor.IsShadowRdpSession ? "[SHADOW]" : "[LOCAL]");
         contextMenu.Items.Add(new ToolStripMenuItem($"RDPClipGuard v2.0 {roleLabel}") { Enabled = false, Font = new Font(contextMenu.Font, FontStyle.Bold) });
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_statusItem);
@@ -250,7 +250,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         if (_diagnosticItem.Checked)
         {
             // Enable diagnostics
-            string role = _isRemoteSession ? "REMOTE" : "LOCAL";
+            string role = _isRemoteSession ? "REMOTE" : (_monitor.IsShadowRdpSession ? "SHADOW" : "LOCAL");
             try
             {
                 _monitor.EnableDiagnostics(role);

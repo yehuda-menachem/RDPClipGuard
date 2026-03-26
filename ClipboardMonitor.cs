@@ -17,10 +17,10 @@ public sealed class ClipboardMonitor : IDisposable
     private ClipboardListener? _clipboardListener;
     private DiagnosticLogger? _diagnosticLogger;
     private bool _diagnosticsEnabled;
-
     public event Action<string>? StatusChanged;
     public int CopyCount => _copyCount;
     public DateTime StartTime => _startTime;
+    public bool IsShadowRdpSession => DetectShadowRdpSession();
 
     /// <summary>
     /// Gets whether diagnostic mode is currently enabled.
@@ -30,6 +30,18 @@ public sealed class ClipboardMonitor : IDisposable
     public ClipboardMonitor()
     {
         _timer = new System.Threading.Timer(CheckClipboard, null, Timeout.Infinite, Timeout.Infinite);
+    }
+
+    /// <summary>
+    /// Detects Shadow RDP: rdpclip is running but we're NOT in a regular RDP session.
+    /// In regular RDP, TerminalServerSession = true.
+    /// In Shadow RDP, TerminalServerSession = false but rdpclip still runs.
+    /// </summary>
+    private static bool DetectShadowRdpSession()
+    {
+        if (System.Windows.Forms.SystemInformation.TerminalServerSession)
+            return false;
+        return Process.GetProcessesByName("rdpclip").Length > 0;
     }
 
     public void Start()
@@ -111,10 +123,14 @@ public sealed class ClipboardMonitor : IDisposable
             ? (e.ClipboardText.Length > 50 ? e.ClipboardText.Substring(0, 50) + "..." : e.ClipboardText)
             : "(empty or non-text)";
 
+        // Check if there's a gap in sequence numbers (listener might have missed events)
+        uint seqGap = e.CurrentSequenceNumber - e.PreviousSequenceNumber;
+        string gapWarning = seqGap > 1 ? $" ⚠️ GAP={seqGap - 1} MISSED" : "";
+
         _diagnosticLogger.LogDiagnostic(
             $"Seq: {e.PreviousSequenceNumber}→{e.CurrentSequenceNumber} | " +
             $"Formats: {e.FormatList} | Hash: {e.TextHash ?? "N/A"} | " +
-            $"Text: \"{textPreview}\"");
+            $"Text: \"{textPreview}\"{gapWarning}");
     }
 
     private void CheckClipboard(object? state)
@@ -125,6 +141,13 @@ public sealed class ClipboardMonitor : IDisposable
 
             if (current == null)
             {
+                if (DetectShadowRdpSession())
+                {
+                    var skipMsg = "Clipboard inaccessible in Shadow RDP - skipping rdpclip reset to preserve Shadow clipboard channel";
+                    RaiseStatus(skipMsg);
+                    _diagnosticLogger?.LogWarning(skipMsg);
+                    return;
+                }
                 var msg = $"Clipboard inaccessible after {_copyCount} copies - resetting rdpclip";
                 RaiseStatus(msg);
                 _diagnosticLogger?.LogWarning(msg);
@@ -148,15 +171,29 @@ public sealed class ClipboardMonitor : IDisposable
                 if (_diagnosticsEnabled)
                 {
                     _diagnosticLogger?.LogDiagnostic($"{status}");
+
+                    // Extra warning if this is a high copy count (clipboard getting stressed)
+                    if (_copyCount > 100)
+                    {
+                        _diagnosticLogger?.LogWarning($"High copy count ({_copyCount}) - clipboard may be under stress");
+                    }
+
                     _diagnosticLogger?.LogInfo(RdpClipHealth.GetDiagnosticSummary());
                 }
 
                 if (_copyCount % ResetAfterCopies == 0)
                 {
-                    var resetMsg = $"Scheduled reset after {_copyCount} copies";
-                    RaiseStatus(resetMsg);
-                    _diagnosticLogger?.LogInfo(resetMsg);
-                    ResetRdpClip();
+                    if (DetectShadowRdpSession())
+                    {
+                        _diagnosticLogger?.LogInfo($"Shadow RDP detected - skipping scheduled rdpclip reset after {_copyCount} copies");
+                    }
+                    else
+                    {
+                        var resetMsg = $"Scheduled reset after {_copyCount} copies";
+                        RaiseStatus(resetMsg);
+                        _diagnosticLogger?.LogInfo(resetMsg);
+                        ResetRdpClip();
+                    }
                 }
             }
         }
