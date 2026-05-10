@@ -5,3 +5,5 @@ installer_output/
 *.suo
 .vs/
 RDPClipGuard_Diagnostics_*.log
+publish/
+publish2/
