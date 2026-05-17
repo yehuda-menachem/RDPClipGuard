@@ -1,9 +1,26 @@
-bin/
-obj/
-installer_output/
+# IDEs and AI Assistants
+.vs/
+.vscode/
+.claude/
 *.user
 *.suo
-.vs/
-RDPClipGuard_Diagnostics_*.log
+
+# Build Outputs
+bin/
+obj/
 publish/
 publish2/
+installer_output/
+
+# Logs
+*.log
+RDPClipGuard_Diagnostics_*.log
+
+# Scripts and temporary files
+remove_claude_credits.ps1
+*.tmp
+*.bak
+
+# OS generated files
+.DS_Store
+Thumbs.db
