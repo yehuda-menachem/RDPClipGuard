@@ -97,23 +97,17 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _lastStatus = message;
 
-        if (_trayIcon.IsHandleCreated() || true)
+        try
         {
-            try
-            {
-                if (_statusItem.GetCurrentParent()?.InvokeRequired == true)
-                {
-                    _statusItem.GetCurrentParent()?.BeginInvoke(() => UpdateUI(message));
-                }
-                else
-                {
-                    UpdateUI(message);
-                }
-            }
-            catch
-            {
-                // UI might be disposing
-            }
+            var parent = _statusItem.GetCurrentParent();
+            if (parent != null && parent.InvokeRequired)
+                parent.BeginInvoke(() => UpdateUI(message));
+            else
+                UpdateUI(message);
+        }
+        catch
+        {
+            // UI might be disposing
         }
     }
 
@@ -175,22 +169,17 @@ public sealed class TrayApplicationContext : ApplicationContext
         while ((DateTime.UtcNow - startTime).TotalMilliseconds < timeoutMs)
         {
             var processes = System.Diagnostics.Process.GetProcessesByName("rdpclip");
-
-            // Check if process exists and is responding
-            if (processes.Length == 0 || !processes[0].Responding)
+            bool ready = false;
+            try
             {
-                Thread.Sleep(100);
-                continue;
+                if (processes.Length > 0 && processes[0].Responding && CanAccessClipboard())
+                    ready = true;
             }
-
-            // Process is responding, but check if clipboard is actually accessible
-            // This is critical - process.Responding != clipboard ready
-            if (CanAccessClipboard())
+            finally
             {
-                // rdpclip is running, responding, AND clipboard is accessible
-                return;
+                foreach (var p in processes) p.Dispose();
             }
-
+            if (ready) return;
             Thread.Sleep(100);
         }
         // Timeout reached - proceed anyway
@@ -404,7 +393,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
 
         // Fallback: create icon programmatically
-        var bmp = new Bitmap(32, 32);
+        using var bmp = new Bitmap(32, 32);
         using (var g = Graphics.FromImage(bmp))
         {
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
@@ -425,8 +414,12 @@ public sealed class TrayApplicationContext : ApplicationContext
             g.DrawLine(linePen, 9, 26, 18, 26);
         }
 
-        var handle = bmp.GetHicon();
-        return Icon.FromHandle(handle);
+        // GetHicon creates an HICON that Icon.FromHandle does not own (won't DestroyIcon on GC).
+        // Clone to get an owned copy, then destroy the raw HICON immediately.
+        IntPtr hIcon = bmp.GetHicon();
+        var ownedIcon = (Icon)Icon.FromHandle(hIcon).Clone();
+        NativeMethods.DestroyIcon(hIcon);
+        return ownedIcon;
     }
 
     protected override void Dispose(bool disposing)
@@ -464,9 +457,4 @@ public static class GraphicsExtensions
         g.DrawPath(pen, path);
     }
 
-    public static bool IsHandleCreated(this NotifyIcon icon)
-    {
-        // NotifyIcon doesn't expose handle directly, this is a helper
-        return true;
-    }
 }

@@ -15,7 +15,9 @@ static class Program
 
         // If we created the mutex, we own it - no need to wait
         // If we didn't create it, try to acquire it with a timeout
-        bool canRun = createdNew || _mutex.WaitOne(3000);
+        // First instance: mutex is unowned, WaitOne(0) returns immediately.
+        // Subsequent instances: wait up to 3s for the running instance to exit.
+        bool canRun = _mutex.WaitOne(createdNew ? 0 : 3000);
 
         if (!canRun)
         {
@@ -30,12 +32,6 @@ static class Program
 
         try
         {
-            // If we waited for the mutex, we now own it
-            if (!createdNew)
-            {
-                _mutex.ReleaseMutex();
-            }
-
             ApplicationConfiguration.Initialize();
             Application.Run(new TrayApplicationContext());
         }
@@ -47,7 +43,7 @@ static class Program
             }
             catch
             {
-                // Mutex may have already been released
+                // Mutex may have been abandoned if the app crashed
             }
             _mutex?.Dispose();
         }

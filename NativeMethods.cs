@@ -94,6 +94,36 @@ internal static class NativeMethods
     public static extern IntPtr SetParent(IntPtr hWndChild, IntPtr hWndNewParent);
 
     /// <summary>
+    /// Retrieves data from the clipboard in the specified format.
+    /// The returned handle is owned by the clipboard — do NOT call GlobalFree on it.
+    /// Valid only while the clipboard is open (between OpenClipboard/CloseClipboard).
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr GetClipboardData(uint uFormat);
+
+    /// <summary>
+    /// Locks a global memory object and returns a pointer to its data.
+    /// Must be paired with GlobalUnlock. Do NOT free clipboard-owned handles.
+    /// </summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GlobalLock(IntPtr hMem);
+
+    /// <summary>
+    /// Unlocks a global memory object locked by GlobalLock.
+    /// </summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GlobalUnlock(IntPtr hMem);
+
+    /// <summary>
+    /// Destroys an icon created by GetHicon() or CreateIcon().
+    /// Use when Icon.FromHandle() was used (which does not take ownership).
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool DestroyIcon(IntPtr hIcon);
+
+    /// <summary>
     /// Gets a human-readable name for standard clipboard format IDs.
     /// </summary>
     public static string GetFormatName(uint format)

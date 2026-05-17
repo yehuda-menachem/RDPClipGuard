@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Windows.Forms;
@@ -46,28 +47,11 @@ public sealed class ClipboardListener : IDisposable
         {
             uint currentSequence = NativeMethods.GetClipboardSequenceNumber();
 
-            // Skip if clipboard is locked (e.g., rdpclip restarting)
-            // Try with a very short timeout to avoid deadlock
-            if (!TryOpenClipboardWithTimeout(100))
-            {
-                // Clipboard is busy (likely rdpclip restarting) - skip this event
-                // We'll get another event when clipboard is ready
-                // Log this as a skipped event for diagnostics
-                System.Diagnostics.Debug.WriteLine($"[ClipboardListener] SKIPPED: Clipboard locked - Seq {_lastSequenceNumber}→{currentSequence}");
-                return;
-            }
+            var (isFileDrop, text, formats) = ReadClipboard();
 
-            // Skip file drops - they have complex formats that can lock clipboard for a long time
-            // This prevents deadlock when copying large files or many files
-            if (IsFileDropClipboard())
-            {
-                // File drop detected - skip to avoid clipboard lock during file processing
+            // Skip file drops and locked clipboard
+            if (isFileDrop || text == null)
                 return;
-            }
-
-            // Get clipboard content and formats
-            var text = GetClipboardText();
-            var formats = GetClipboardFormats();
 
             var args = new ClipboardChangeEventArgs
             {
@@ -76,7 +60,7 @@ public sealed class ClipboardListener : IDisposable
                 PreviousSequenceNumber = _lastSequenceNumber,
                 CurrentSequenceNumber = currentSequence,
                 ClipboardText = text,
-                TextHash = text != null ? ComputeHash(text) : null,
+                TextHash = text.Length > 0 ? ComputeHash(text) : null,
                 Formats = formats
             };
 
@@ -90,143 +74,63 @@ public sealed class ClipboardListener : IDisposable
     }
 
     /// <summary>
-    /// Tries to open clipboard with a timeout to prevent deadlock.
-    /// Returns true if successful, false if clipboard is locked.
+    /// Opens the clipboard once and reads formats + text in a single session.
+    /// Returns (isFileDrop=true, null, formats) for file drops.
+    /// Returns (false, null, empty) when clipboard is locked.
+    /// No threads created — uses P/Invoke directly.
     /// </summary>
-    private static bool TryOpenClipboardWithTimeout(int timeoutMs)
+    private static (bool isFileDrop, string? text, List<ClipboardFormatInfo> formats) ReadClipboard()
     {
-        // Quick non-blocking check - if we can open and close immediately, proceed
-        if (NativeMethods.OpenClipboard(IntPtr.Zero))
+        if (!NativeMethods.OpenClipboard(IntPtr.Zero))
+            return (false, null, new List<ClipboardFormatInfo>());
+
+        try
+        {
+            bool isFileDrop = false;
+            var formats = new List<ClipboardFormatInfo>();
+
+            uint fmt = 0;
+            while ((fmt = NativeMethods.EnumClipboardFormats(fmt)) != 0)
+            {
+                if (fmt == NativeMethods.CF_HDROP)
+                    isFileDrop = true;
+
+                string name = NativeMethods.GetFormatName(fmt);
+                if (fmt >= 0xC000)
+                {
+                    var sb = new StringBuilder(256);
+                    if (NativeMethods.GetClipboardFormatName(fmt, sb, 256) > 0)
+                        name = sb.ToString();
+                }
+                formats.Add(new ClipboardFormatInfo { FormatId = fmt, FormatName = name });
+            }
+
+            if (isFileDrop)
+                return (true, null, formats);
+
+            // Read text via P/Invoke — no STA thread needed
+            string? text = null;
+            IntPtr hData = NativeMethods.GetClipboardData(NativeMethods.CF_UNICODETEXT);
+            if (hData != IntPtr.Zero)
+            {
+                IntPtr ptr = NativeMethods.GlobalLock(hData);
+                if (ptr != IntPtr.Zero)
+                {
+                    try { text = Marshal.PtrToStringUni(ptr) ?? ""; }
+                    finally { NativeMethods.GlobalUnlock(hData); }
+                }
+            }
+            else
+            {
+                text = "";
+            }
+
+            return (false, text, formats);
+        }
+        finally
         {
             NativeMethods.CloseClipboard();
-            return true;
         }
-
-        // Clipboard is locked - likely rdpclip is restarting
-        // Return false to skip this event and avoid deadlock
-        return false;
-    }
-
-    /// <summary>
-    /// Checks if the clipboard contains a file drop (CF_HDROP).
-    /// File drops have complex formats that can lock clipboard for a long time,
-    /// especially when copying large files. We skip these to avoid deadlock.
-    /// </summary>
-    private static bool IsFileDropClipboard()
-    {
-        try
-        {
-            if (!NativeMethods.OpenClipboard(IntPtr.Zero))
-                return false;
-
-            try
-            {
-                // CF_HDROP = 15 (File drop format)
-                const uint CF_HDROP = 15;
-                uint format = 0;
-                while ((format = NativeMethods.EnumClipboardFormats(format)) != 0)
-                {
-                    if (format == CF_HDROP)
-                    {
-                        // File drop detected
-                        return true;
-                    }
-                }
-            }
-            finally
-            {
-                NativeMethods.CloseClipboard();
-            }
-        }
-        catch
-        {
-            // If we can't check, assume not a file drop
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Gets text from the clipboard safely in an STA thread.
-    /// </summary>
-    private static string? GetClipboardText()
-    {
-        string? result = null;
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                if (Clipboard.ContainsText())
-                {
-                    result = Clipboard.GetText();
-                }
-                else
-                {
-                    result = "";
-                }
-            }
-            catch
-            {
-                result = null;
-            }
-        });
-
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        thread.Join(2000); // 2 second timeout
-        return result;
-    }
-
-    /// <summary>
-    /// Enumerates all clipboard formats currently available.
-    /// Returns empty list if clipboard is locked to prevent deadlock.
-    /// </summary>
-    private static List<ClipboardFormatInfo> GetClipboardFormats()
-    {
-        var formats = new List<ClipboardFormatInfo>();
-
-        try
-        {
-            // Don't block if clipboard is locked
-            if (!NativeMethods.OpenClipboard(IntPtr.Zero))
-                return formats;
-
-            try
-            {
-                uint format = 0;
-                while ((format = NativeMethods.EnumClipboardFormats(format)) != 0)
-                {
-                    string formatName = NativeMethods.GetFormatName(format);
-
-                    // For custom formats, try to get the actual name
-                    if (format >= 0xC000)
-                    {
-                        StringBuilder sb = new StringBuilder(256);
-                        int result = NativeMethods.GetClipboardFormatName(format, sb, 256);
-                        if (result > 0)
-                        {
-                            formatName = sb.ToString();
-                        }
-                    }
-
-                    formats.Add(new ClipboardFormatInfo
-                    {
-                        FormatId = format,
-                        FormatName = formatName
-                    });
-                }
-            }
-            finally
-            {
-                NativeMethods.CloseClipboard();
-            }
-        }
-        catch
-        {
-            // If enumeration fails, return empty list
-        }
-
-        return formats;
     }
 
     /// <summary>

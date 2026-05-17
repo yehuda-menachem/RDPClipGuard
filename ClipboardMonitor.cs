@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using System.Windows.Forms;
+using System.Runtime.InteropServices;
 
 namespace RDPClipGuard;
 
@@ -80,18 +80,23 @@ public sealed class ClipboardMonitor : IDisposable
 
         _diagnosticsEnabled = false;
 
-        if (_clipboardListener != null)
+        try
         {
-            _clipboardListener.ClipboardChanged -= OnClipboardListenerChanged;
-            _clipboardListener.Dispose();
-            _clipboardListener = null;
+            if (_clipboardListener != null)
+            {
+                _clipboardListener.ClipboardChanged -= OnClipboardListenerChanged;
+                _clipboardListener.Dispose();
+                _clipboardListener = null;
+            }
         }
-
-        if (_diagnosticLogger != null)
+        finally
         {
-            _diagnosticLogger.LogInfo("Diagnostic mode disabled");
-            _diagnosticLogger.Dispose();
-            _diagnosticLogger = null;
+            if (_diagnosticLogger != null)
+            {
+                _diagnosticLogger.LogInfo("Diagnostic mode disabled");
+                _diagnosticLogger.Dispose();
+                _diagnosticLogger = null;
+            }
         }
 
         RaiseStatus("Diagnostic mode disabled");
@@ -179,29 +184,23 @@ public sealed class ClipboardMonitor : IDisposable
 
     private static string? GetClipboardText()
     {
-        string? result = null;
-        var thread = new Thread(() =>
+        if (!NativeMethods.OpenClipboard(IntPtr.Zero))
+            return null;
+        try
         {
-            try
-            {
-                if (System.Windows.Forms.Clipboard.ContainsText())
-                {
-                    result = System.Windows.Forms.Clipboard.GetText();
-                }
-                else
-                {
-                    result = "";
-                }
-            }
-            catch
-            {
-                result = null;
-            }
-        });
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        thread.Join(2000);
-        return result;
+            IntPtr hData = NativeMethods.GetClipboardData(NativeMethods.CF_UNICODETEXT);
+            if (hData == IntPtr.Zero)
+                return "";
+            IntPtr ptr = NativeMethods.GlobalLock(hData);
+            if (ptr == IntPtr.Zero)
+                return null;
+            try { return Marshal.PtrToStringUni(ptr) ?? ""; }
+            finally { NativeMethods.GlobalUnlock(hData); }
+        }
+        finally
+        {
+            NativeMethods.CloseClipboard();
+        }
     }
 
     private void ResetRdpClip()
@@ -218,6 +217,7 @@ public sealed class ClipboardMonitor : IDisposable
                     proc.Kill();
                 }
                 catch { }
+                finally { proc.Dispose(); }
             }
 
             Thread.Sleep(500);
@@ -253,14 +253,23 @@ public sealed class ClipboardMonitor : IDisposable
         while ((DateTime.UtcNow - startTime).TotalMilliseconds < timeoutMs)
         {
             var processes = Process.GetProcessesByName("rdpclip");
-            if (processes.Length > 0 && processes[0].Responding)
+            bool ready = false;
+            try
             {
-                if (NativeMethods.OpenClipboard(IntPtr.Zero))
+                if (processes.Length > 0 && processes[0].Responding)
                 {
-                    NativeMethods.CloseClipboard();
-                    return;
+                    if (NativeMethods.OpenClipboard(IntPtr.Zero))
+                    {
+                        NativeMethods.CloseClipboard();
+                        ready = true;
+                    }
                 }
             }
+            finally
+            {
+                foreach (var p in processes) p.Dispose();
+            }
+            if (ready) return;
             Thread.Sleep(100);
         }
     }
