@@ -17,6 +17,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _diagnosticItem;
     private string _lastStatus = "Starting...";
     private readonly bool _isRemoteSession;
+    private readonly bool _isShadowSession;
 
     private const string RegistryKey = @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
     private const string AppName = "RDPClipGuard";
@@ -26,7 +27,12 @@ public sealed class TrayApplicationContext : ApplicationContext
         // Detect if running in RDP session
         _isRemoteSession = SystemInformation.TerminalServerSession;
 
-        _monitor = new ClipboardMonitor();
+        // Shadow session = local machine (not RDP) but rdpclip is running (viewing a remote session)
+        var rdpClipProcs = System.Diagnostics.Process.GetProcessesByName("rdpclip");
+        _isShadowSession = !_isRemoteSession && rdpClipProcs.Length > 0;
+        foreach (var p in rdpClipProcs) p.Dispose();
+
+        _monitor = new ClipboardMonitor(_isShadowSession);
         _monitor.StatusChanged += OnStatusChanged;
 
         _statusItem = new ToolStripMenuItem("Status: Starting...")
@@ -61,7 +67,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
 
         var contextMenu = new ContextMenuStrip();
-        string roleLabel = _isRemoteSession ? "[REMOTE]" : "[LOCAL]";
+        string roleLabel = _isRemoteSession ? "[REMOTE]" : (_isShadowSession ? "[SHADOW]" : "[LOCAL]");
         contextMenu.Items.Add(new ToolStripMenuItem($"RDPClipGuard v2.0 {roleLabel}") { Enabled = false, Font = new Font(contextMenu.Font, FontStyle.Bold) });
         contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add(_statusItem);
@@ -239,24 +245,18 @@ public sealed class TrayApplicationContext : ApplicationContext
         if (_diagnosticItem.Checked)
         {
             // Enable diagnostics
-            string role = _isRemoteSession ? "REMOTE" : "LOCAL";
+            string role = _isRemoteSession ? "REMOTE" : (_isShadowSession ? "SHADOW" : "LOCAL");
             try
             {
                 _monitor.EnableDiagnostics(role);
 
-                // Get the log file info for the notification
-                var logPath = GetLatestLogFilePath();
-                if (logPath != null)
-                {
-                    var logFileName = Path.GetFileName(logPath);
-                    _trayIcon.ShowBalloonTip(3000, "RDPClipGuard",
-                        $"Diagnostic mode enabled\nLogging to: {logFileName}", ToolTipIcon.Info);
-                }
-                else
-                {
-                    _trayIcon.ShowBalloonTip(3000, "RDPClipGuard",
-                        "Diagnostic mode enabled (but could not determine log path)", ToolTipIcon.Warning);
-                }
+                var logFileName = _monitor.LogFilePath != null
+                    ? Path.GetFileName(_monitor.LogFilePath)
+                    : null;
+                var tipMsg = logFileName != null
+                    ? $"Diagnostic mode enabled\nLogging to: {logFileName}"
+                    : "Diagnostic mode enabled";
+                _trayIcon.ShowBalloonTip(3000, "RDPClipGuard", tipMsg, ToolTipIcon.Info);
             }
             catch (Exception ex)
             {
@@ -272,37 +272,6 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
-    private string? GetLatestLogFilePath()
-    {
-        try
-        {
-            // Check AppData first
-            string appDataDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                "RDPClipGuard");
-
-            if (Directory.Exists(appDataDir))
-            {
-                var logFiles = Directory.GetFiles(appDataDir, "RDPClipGuard_Diagnostics_*.log")
-                    .OrderByDescending(f => File.GetLastWriteTime(f))
-                    .FirstOrDefault();
-                if (logFiles != null)
-                    return logFiles;
-            }
-
-            // Fall back to AppContext.BaseDirectory
-            var baseDir = AppContext.BaseDirectory;
-            var baseLogFiles = Directory.GetFiles(baseDir, "RDPClipGuard_Diagnostics_*.log")
-                .OrderByDescending(f => File.GetLastWriteTime(f))
-                .FirstOrDefault();
-            return baseLogFiles;
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
     private void OnOpenLogFile(object? sender, EventArgs e)
     {
         if (!_monitor.DiagnosticsEnabled)
@@ -312,28 +281,21 @@ public sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
+        var logPath = _monitor.LogFilePath;
+        if (logPath == null || !File.Exists(logPath))
+        {
+            MessageBox.Show("No diagnostic log file found.",
+                "Log Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+
         try
         {
-            // This is a bit hacky - we store the logger in a static field temporarily
-            // Better approach would be to expose it from ClipboardMonitor
-            var baseDir = AppContext.BaseDirectory;
-            var logFiles = Directory.GetFiles(baseDir, "RDPClipGuard_Diagnostics_*.log")
-                .OrderByDescending(f => File.GetLastWriteTime(f))
-                .FirstOrDefault();
-
-            if (logFiles != null)
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = logFiles,
-                    UseShellExecute = true
-                });
-            }
-            else
-            {
-                MessageBox.Show("No diagnostic log file found.",
-                    "Log Not Found", MessageBoxButtons.OK, MessageBoxIcon.Information);
-            }
+                FileName = logPath,
+                UseShellExecute = true
+            });
         }
         catch (Exception ex)
         {
@@ -344,12 +306,13 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void OnOpenLogFolder(object? sender, EventArgs e)
     {
+        var logDir = _monitor.LogDirectory ?? AppContext.BaseDirectory;
+
         try
         {
-            var baseDir = AppContext.BaseDirectory;
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
-                FileName = baseDir,
+                FileName = logDir,
                 UseShellExecute = true
             });
         }

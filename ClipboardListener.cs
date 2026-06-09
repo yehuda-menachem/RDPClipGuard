@@ -15,12 +15,26 @@ public sealed class ClipboardListener : IDisposable
     private readonly HiddenClipboardWindow _window;
     private uint _lastSequenceNumber;
     private bool _disposed;
+    private System.Threading.Timer? _processEventTimer;
+    private volatile bool _clipboardChanged;
+    private DiagnosticLogger? _diagnosticLogger;
+    private readonly object _handleValidationLock = new();
 
     public event EventHandler<ClipboardChangeEventArgs>? ClipboardChanged;
 
-    public ClipboardListener()
+    public bool IsListening => !_disposed && _window.IsRegistered && _window.IsHandleValid;
+
+    public bool IsHandleValid => _window.IsHandleValid;
+
+    /// <summary>
+    /// Returns whether registration succeeded on last Start() call.
+    /// </summary>
+    public bool IsRegistrationSuccessful { get; private set; }
+
+    public ClipboardListener(DiagnosticLogger? diagnosticLogger = null)
     {
-        _window = new HiddenClipboardWindow();
+        _diagnosticLogger = diagnosticLogger;
+        _window = new HiddenClipboardWindow(diagnosticLogger);
         _window.ClipboardUpdateReceived += OnClipboardUpdateReceived;
         _lastSequenceNumber = NativeMethods.GetClipboardSequenceNumber();
     }
@@ -30,7 +44,12 @@ public sealed class ClipboardListener : IDisposable
     /// </summary>
     public void Start()
     {
-        _window.RegisterForNotifications();
+        IsRegistrationSuccessful = _window.RegisterForNotifications();
+        if (!IsRegistrationSuccessful)
+        {
+            _diagnosticLogger?.LogWarning($"[LISTENER] Registration failed, but continuing with timer-based fallback");
+        }
+        _processEventTimer ??= new System.Threading.Timer(ProcessClipboardEvent, null, 0, 100);
     }
 
     /// <summary>
@@ -38,11 +57,24 @@ public sealed class ClipboardListener : IDisposable
     /// </summary>
     public void Stop()
     {
+        _processEventTimer?.Dispose();
+        _processEventTimer = null;
+        _clipboardChanged = false;
         _window.UnregisterFromNotifications();
     }
 
     private void OnClipboardUpdateReceived(object? sender, EventArgs e)
     {
+        _clipboardChanged = true;
+    }
+
+    private void ProcessClipboardEvent(object? state)
+    {
+        if (!_clipboardChanged || _disposed)
+            return;
+
+        _clipboardChanged = false;
+
         try
         {
             uint currentSequence = NativeMethods.GetClipboardSequenceNumber();
@@ -67,21 +99,33 @@ public sealed class ClipboardListener : IDisposable
             _lastSequenceNumber = currentSequence;
             ClipboardChanged?.Invoke(this, args);
         }
-        catch
+        catch (Exception ex)
         {
-            // Silently handle errors in clipboard access
+            _diagnosticLogger?.LogError($"ProcessClipboardEvent failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 
     /// <summary>
     /// Opens the clipboard once and reads formats + text in a single session.
     /// Returns (isFileDrop=true, null, formats) for file drops.
-    /// Returns (false, null, empty) when clipboard is locked.
-    /// No threads created — uses P/Invoke directly.
+    /// Returns (false, null, empty) when clipboard is locked or timeout.
+    /// Includes timeout protection (500ms max).
     /// </summary>
     private static (bool isFileDrop, string? text, List<ClipboardFormatInfo> formats) ReadClipboard()
     {
-        if (!NativeMethods.OpenClipboard(IntPtr.Zero))
+        var startTime = DateTime.UtcNow;
+        const int TimeoutMs = 500;
+
+        // Try to open clipboard with timeout
+        bool opened = false;
+        while (!opened && (DateTime.UtcNow - startTime).TotalMilliseconds < TimeoutMs)
+        {
+            opened = NativeMethods.OpenClipboard(IntPtr.Zero);
+            if (!opened)
+                Thread.Sleep(50);
+        }
+
+        if (!opened)
             return (false, null, new List<ClipboardFormatInfo>());
 
         try
@@ -148,23 +192,30 @@ public sealed class ClipboardListener : IDisposable
         if (!_disposed)
         {
             _disposed = true;
-            Stop();
+            _processEventTimer?.Dispose();
+            _processEventTimer = null;
             _window?.Dispose();
         }
     }
 
     /// <summary>
     /// Hidden window that receives WM_CLIPBOARDUPDATE messages.
+    /// Validates window handle state and logs errors.
     /// </summary>
     private sealed class HiddenClipboardWindow : NativeWindow, IDisposable
     {
         private bool _isRegistered;
         private bool _disposed;
+        private DiagnosticLogger? _diagnosticLogger;
+
+        public bool IsRegistered => _isRegistered && Handle != IntPtr.Zero;
+        public bool IsHandleValid => Handle != IntPtr.Zero && NativeMethods.IsWindow(Handle);
 
         public event EventHandler? ClipboardUpdateReceived;
 
-        public HiddenClipboardWindow()
+        public HiddenClipboardWindow(DiagnosticLogger? diagnosticLogger = null)
         {
+            _diagnosticLogger = diagnosticLogger;
             // Create as a message-only window (invisible, no events)
             var createParams = new CreateParams
             {
@@ -175,40 +226,80 @@ public sealed class ClipboardListener : IDisposable
                 Caption = "RDPClipGuard Hidden Window"
             };
 
-            CreateHandle(createParams);
-        }
-
-        public void RegisterForNotifications()
-        {
-            if (!_isRegistered && Handle != IntPtr.Zero)
+            try
             {
-                try
-                {
-                    if (NativeMethods.AddClipboardFormatListener(Handle))
-                    {
-                        _isRegistered = true;
-                    }
-                }
-                catch
-                {
-                    // Handle creation error
-                }
+                CreateHandle(createParams);
+                _diagnosticLogger?.LogDiagnostic($"[LISTENER] Hidden window created: handle={Handle.ToInt64():X}");
+            }
+            catch (Exception ex)
+            {
+                _diagnosticLogger?.LogError($"[LISTENER] Failed to create hidden window: {ex.Message}");
             }
         }
 
-        public void UnregisterFromNotifications()
+        public bool RegisterForNotifications()
         {
-            if (_isRegistered && Handle != IntPtr.Zero)
+            if (_isRegistered || Handle == IntPtr.Zero)
+                return _isRegistered;
+
+            try
             {
-                try
+                if (!IsHandleValid)
                 {
-                    NativeMethods.RemoveClipboardFormatListener(Handle);
+                    _diagnosticLogger?.LogWarning($"[LISTENER] RegisterForNotifications: handle invalid, skipping registration");
+                    return false;
+                }
+
+                bool success = NativeMethods.AddClipboardFormatListener(Handle);
+                if (success)
+                {
+                    _isRegistered = true;
+                    _diagnosticLogger?.LogDiagnostic($"[LISTENER] RegisterForNotifications: SUCCESS, handle={Handle.ToInt64():X}");
+                }
+                else
+                {
+                    _diagnosticLogger?.LogWarning($"[LISTENER] RegisterForNotifications: AddClipboardFormatListener returned false");
+                }
+                return success;
+            }
+            catch (Exception ex)
+            {
+                _diagnosticLogger?.LogError($"[LISTENER] RegisterForNotifications failed: {ex.GetType().Name}: {ex.Message}");
+                return false;
+            }
+        }
+
+        public bool UnregisterFromNotifications()
+        {
+            if (!_isRegistered || Handle == IntPtr.Zero)
+                return true;
+
+            try
+            {
+                if (!IsHandleValid)
+                {
+                    _diagnosticLogger?.LogWarning($"[LISTENER] UnregisterFromNotifications: handle invalid, marking as unregistered");
                     _isRegistered = false;
+                    return true;
                 }
-                catch
+
+                bool success = NativeMethods.RemoveClipboardFormatListener(Handle);
+                if (success)
                 {
-                    // Handle removal error
+                    _isRegistered = false;
+                    _diagnosticLogger?.LogDiagnostic($"[LISTENER] UnregisterFromNotifications: SUCCESS");
                 }
+                else
+                {
+                    _diagnosticLogger?.LogWarning($"[LISTENER] UnregisterFromNotifications: RemoveClipboardFormatListener returned false");
+                }
+                return success;
+            }
+            catch (Exception ex)
+            {
+                _diagnosticLogger?.LogError($"[LISTENER] UnregisterFromNotifications failed: {ex.GetType().Name}: {ex.Message}");
+                _isRegistered = false;
+                return false;
             }
         }
 
@@ -229,7 +320,15 @@ public sealed class ClipboardListener : IDisposable
                 UnregisterFromNotifications();
                 if (Handle != IntPtr.Zero)
                 {
-                    DestroyHandle();
+                    try
+                    {
+                        DestroyHandle();
+                        _diagnosticLogger?.LogDiagnostic($"[LISTENER] Hidden window destroyed");
+                    }
+                    catch (Exception ex)
+                    {
+                        _diagnosticLogger?.LogError($"[LISTENER] Failed to destroy window handle: {ex.Message}");
+                    }
                 }
             }
         }

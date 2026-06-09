@@ -198,6 +198,30 @@ public sealed class DiagnosticLogger : IDisposable
     }
 
     /// <summary>
+    /// Writes a listener-specific diagnostic message.
+    /// </summary>
+    public void LogListenerEvent(string message)
+    {
+        Log($"👂 {message}", "LISTENER");
+    }
+
+    /// <summary>
+    /// Writes a polling-specific diagnostic message.
+    /// </summary>
+    public void LogPollingEvent(string message)
+    {
+        Log($"🔁 {message}", "POLLING");
+    }
+
+    /// <summary>
+    /// Writes a synchronization/race condition diagnostic message.
+    /// </summary>
+    public void LogSyncEvent(string message)
+    {
+        Log($"🔄 {message}", "SYNC");
+    }
+
+    /// <summary>
     /// Writes initial session header with system info.
     /// </summary>
     private void WriteInitialHeader(string role)

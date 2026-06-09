@@ -40,6 +40,13 @@ internal static class NativeMethods
     public const uint CF_GDIOBJLAST = 0x03FF;
 
     /// <summary>
+    /// Determines whether the specified window handle is valid.
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = false, ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool IsWindow(IntPtr hWnd);
+
+    /// <summary>
     /// Retrieves the clipboard sequence number (increments on every clipboard change).
     /// </summary>
     [DllImport("user32.dll", SetLastError = false, ExactSpelling = true)]
