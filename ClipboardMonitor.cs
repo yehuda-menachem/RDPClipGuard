@@ -154,7 +154,8 @@ public sealed class ClipboardMonitor : IDisposable
         _diagnosticLogger.LogInfo(RdpClipHealth.GetDiagnosticSummary());
 
         // Set up event-based clipboard listener for real-time notification
-        _clipboardListener = new ClipboardListener(_diagnosticLogger);
+        // Pass the shared lock so both polling and listener serialize their clipboard access
+        _clipboardListener = new ClipboardListener(_clipboardAccessLock, _diagnosticLogger);
         _clipboardListener.ClipboardChanged += OnClipboardListenerChanged;
 
         try
@@ -481,8 +482,9 @@ public sealed class ClipboardMonitor : IDisposable
 
     /// <summary>
     /// Waits for rdpclip.exe to be fully operational (responsive AND clipboard accessible).
+    /// Acquires _clipboardAccessLock before each clipboard probe to serialize with polling.
     /// </summary>
-    private static void WaitForRdpClipReady(int timeoutMs)
+    private void WaitForRdpClipReady(int timeoutMs)
     {
         var startTime = DateTime.UtcNow;
         while ((DateTime.UtcNow - startTime).TotalMilliseconds < timeoutMs)
@@ -493,10 +495,17 @@ public sealed class ClipboardMonitor : IDisposable
             {
                 if (processes.Length > 0 && processes[0].Responding)
                 {
-                    if (NativeMethods.OpenClipboard(IntPtr.Zero))
+                    if (Monitor.TryEnter(_clipboardAccessLock, 200))
                     {
-                        NativeMethods.CloseClipboard();
-                        ready = true;
+                        try
+                        {
+                            if (NativeMethods.OpenClipboard(IntPtr.Zero))
+                            {
+                                NativeMethods.CloseClipboard();
+                                ready = true;
+                            }
+                        }
+                        finally { Monitor.Exit(_clipboardAccessLock); }
                     }
                 }
             }
@@ -573,6 +582,7 @@ public sealed class ClipboardMonitor : IDisposable
 
             _lastKnownRdpClipPid = -1;
             _listenerLastEventTime = DateTime.Now; // prevent the quiet-listener check below from also resetting
+            _lastRdpclipRestartTime = DateTime.MinValue; // prevent fast-silence false positive after a "not running" restart
             ResetRdpClip();
         }
 

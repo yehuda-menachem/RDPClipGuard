@@ -18,7 +18,7 @@ public sealed class ClipboardListener : IDisposable
     private System.Threading.Timer? _processEventTimer;
     private volatile bool _clipboardChanged;
     private DiagnosticLogger? _diagnosticLogger;
-    private readonly object _handleValidationLock = new();
+    private readonly object _clipboardAccessLock; // Shared lock from ClipboardMonitor to serialize clipboard access
 
     public event EventHandler<ClipboardChangeEventArgs>? ClipboardChanged;
 
@@ -31,8 +31,9 @@ public sealed class ClipboardListener : IDisposable
     /// </summary>
     public bool IsRegistrationSuccessful { get; private set; }
 
-    public ClipboardListener(DiagnosticLogger? diagnosticLogger = null)
+    public ClipboardListener(object clipboardAccessLock, DiagnosticLogger? diagnosticLogger = null)
     {
+        _clipboardAccessLock = clipboardAccessLock;
         _diagnosticLogger = diagnosticLogger;
         _window = new HiddenClipboardWindow(diagnosticLogger);
         _window.ClipboardUpdateReceived += OnClipboardUpdateReceived;
@@ -75,6 +76,12 @@ public sealed class ClipboardListener : IDisposable
 
         _clipboardChanged = false;
 
+        if (!Monitor.TryEnter(_clipboardAccessLock, 300))
+        {
+            _diagnosticLogger?.LogWarning("[LISTENER] Clipboard access lock timeout - skipping event");
+            return;
+        }
+
         try
         {
             uint currentSequence = NativeMethods.GetClipboardSequenceNumber();
@@ -102,6 +109,10 @@ public sealed class ClipboardListener : IDisposable
         catch (Exception ex)
         {
             _diagnosticLogger?.LogError($"ProcessClipboardEvent failed: {ex.GetType().Name}: {ex.Message}");
+        }
+        finally
+        {
+            Monitor.Exit(_clipboardAccessLock);
         }
     }
 

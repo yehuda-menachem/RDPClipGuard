@@ -326,10 +326,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     private void OnExit(object? sender, EventArgs e)
     {
         _monitor.Stop();
-        _monitor.Dispose();
         _trayIcon.Visible = false;
-        _trayIcon.Dispose();
-        Application.Exit();
+        Application.Exit(); // Dispose() will be called by ApplicationContext teardown
     }
 
     private static Icon CreateDefaultIcon()
