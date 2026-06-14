@@ -39,6 +39,10 @@ internal static class NativeMethods
     public const uint CF_GDIOBJFIRST = 0x0300;
     public const uint CF_GDIOBJLAST = 0x03FF;
 
+    // GlobalAlloc flags (used when writing data to the clipboard)
+    public const uint GMEM_MOVEABLE = 0x0002;
+    public const uint GMEM_ZEROINIT = 0x0040;
+
     /// <summary>
     /// Determines whether the specified window handle is valid.
     /// </summary>
@@ -121,6 +125,33 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool GlobalUnlock(IntPtr hMem);
+
+    /// <summary>
+    /// Allocates movable global memory (use GMEM_MOVEABLE) for placing on the clipboard.
+    /// </summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GlobalAlloc(uint uFlags, UIntPtr dwBytes);
+
+    /// <summary>
+    /// Frees a global memory object. Call only on memory NOT handed to SetClipboardData
+    /// (the system takes ownership of clipboard memory on a successful SetClipboardData).
+    /// </summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr GlobalFree(IntPtr hMem);
+
+    /// <summary>
+    /// Empties the clipboard and frees handles to data in it. Requires the clipboard to be open.
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool EmptyClipboard();
+
+    /// <summary>
+    /// Places data on the clipboard in the specified format. On success the system OWNS hMem —
+    /// do NOT GlobalFree it. On failure (returns IntPtr.Zero) the caller still owns hMem.
+    /// </summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern IntPtr SetClipboardData(uint uFormat, IntPtr hMem);
 
     /// <summary>
     /// Destroys an icon created by GetHicon() or CreateIcon().

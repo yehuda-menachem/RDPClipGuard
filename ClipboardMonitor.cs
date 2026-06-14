@@ -1,5 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace RDPClipGuard;
 
@@ -40,6 +42,13 @@ public sealed class ClipboardMonitor : IDisposable
     private bool _diagnosticsEnabled;
     private int _listenerRegistrationFailures; // Track failed registration attempts
 
+    // ClipBridge integration: anti-echo state. Bridge-applied writes are recorded here so the
+    // resulting clipboard-change events are suppressed (not counted, not echoed back).
+    private readonly object _selfWriteLock = new();
+    private readonly Queue<(string Hash, DateTime At)> _selfWrites = new();
+    private string? _lastRaisedHash; // de-dups ClipboardTextChanged across listener + poller
+    private const int SelfWriteTtlSeconds = 5;
+
     // Fast silence detection
     private DateTime _lastRdpclipRestartTime = DateTime.MinValue;
     private int _consecutiveRestarts; // Count restarts in quick succession
@@ -56,6 +65,11 @@ public sealed class ClipboardMonitor : IDisposable
     /// </summary>
     public MonitorState CurrentState => _currentState;
     public event Action<string>? StatusChanged;
+    /// <summary>
+    /// Fires on a genuine clipboard text change (not on a bridge-applied self-write).
+    /// Always active, independent of diagnostic mode. Used by ClipBridge.
+    /// </summary>
+    public event Action<ClipboardTextChange>? ClipboardTextChanged;
     public int CopyCount => _copyCount;
     public DateTime StartTime => _startTime;
     /// <summary>
@@ -82,6 +96,18 @@ public sealed class ClipboardMonitor : IDisposable
 
     public void Start()
     {
+        // Always-on event-based listener: ClipBridge needs near-instant clipboard notifications
+        // regardless of diagnostic mode. Diagnostic logging is wired in separately via
+        // EnableDiagnostics() → SetDiagnosticLogger(). The shared lock serializes clipboard access
+        // between this listener and the poller.
+        if (_clipboardListener == null)
+        {
+            _clipboardListener = new ClipboardListener(_clipboardAccessLock, _diagnosticLogger);
+            _clipboardListener.ClipboardChanged += OnClipboardListenerChanged;
+            try { _clipboardListener.Start(); }
+            catch (Exception ex) { _diagnosticLogger?.LogError($"Failed to start clipboard listener: {ex.Message}"); }
+        }
+
         _timer.Change(0, PollIntervalMs);
         TransitionState(MonitorState.Monitoring_ListenerActive, "start");
         RaiseStatus("Monitoring started");
@@ -153,20 +179,10 @@ public sealed class ClipboardMonitor : IDisposable
         _diagnosticLogger.Log($"Current copy count: {_copyCount}");
         _diagnosticLogger.LogInfo(RdpClipHealth.GetDiagnosticSummary());
 
-        // Set up event-based clipboard listener for real-time notification
-        // Pass the shared lock so both polling and listener serialize their clipboard access
-        _clipboardListener = new ClipboardListener(_clipboardAccessLock, _diagnosticLogger);
-        _clipboardListener.ClipboardChanged += OnClipboardListenerChanged;
-
-        try
-        {
-            _clipboardListener.Start();
-            _diagnosticLogger.LogInfo("Event-based clipboard listener started");
-        }
-        catch (Exception ex)
-        {
-            _diagnosticLogger.LogError($"Failed to start clipboard listener: {ex.Message}");
-        }
+        // The event-based listener is already running (started in Start()); just wire the
+        // diagnostic logger into it so its internal logging activates.
+        _clipboardListener?.SetDiagnosticLogger(_diagnosticLogger);
+        _diagnosticLogger.LogInfo("Event-based clipboard listener active");
 
         _diagnosticLogger.Log("");
 
@@ -185,12 +201,8 @@ public sealed class ClipboardMonitor : IDisposable
 
         try
         {
-            if (_clipboardListener != null)
-            {
-                _clipboardListener.ClipboardChanged -= OnClipboardListenerChanged;
-                _clipboardListener.Dispose();
-                _clipboardListener = null;
-            }
+            // Keep the listener running for ClipBridge; just detach the diagnostic logger.
+            _clipboardListener?.SetDiagnosticLogger(null);
         }
         finally
         {
@@ -210,10 +222,14 @@ public sealed class ClipboardMonitor : IDisposable
     /// </summary>
     private void OnClipboardListenerChanged(object? sender, ClipboardChangeEventArgs e)
     {
+        _listenerLastEventTime = DateTime.Now;
+
+        // Feed ClipBridge with near-instant notifications. Suppresses bridge-applied self-writes
+        // and de-dups against the poller path.
+        RaiseClipboardTextChangedIfNew(e.ClipboardText);
+
         if (_diagnosticLogger == null)
             return;
-
-        _listenerLastEventTime = DateTime.Now;
 
         var textPreview = e.ClipboardText != null
             ? (e.ClipboardText.Length > 50 ? e.ClipboardText.Substring(0, 50) + "..." : e.ClipboardText)
@@ -260,34 +276,48 @@ public sealed class ClipboardMonitor : IDisposable
                 }
                 else if (!string.IsNullOrEmpty(current) && current != _lastContent)
                 {
-                    _copyCount++;
                     // Cap stored content to avoid keeping large documents in memory
                     _lastContent = current.Length > 4096 ? current[..4096] : current;
 
-                    var elapsed = (DateTime.Now - _startTime).TotalMinutes;
-                    var preview = current.Length > 50 ? current[..50] : current;
-                    preview = preview.Replace("\n", " ").Replace("\r", "");
-
-                    var status = $"Copy #{_copyCount} | {elapsed:F1} min | \"{preview}\"";
-                    RaiseStatus(status);
-
-                    if (_diagnosticsEnabled)
+                    if (IsRecentSelfWrite(current))
                     {
-                        _diagnosticLogger?.LogPollingEvent($"{status}");
-
-                        if (_copyCount > 100)
-                            _diagnosticLogger?.LogWarning($"High copy count ({_copyCount}) - clipboard may be under stress");
-
-                        _diagnosticLogger?.LogInfo(RdpClipHealth.GetDiagnosticSummary());
+                        // ClipBridge wrote this value; suppress it so it isn't counted as a user
+                        // copy, doesn't trigger an rdpclip reset, and isn't echoed back to the peer.
+                        _diagnosticLogger?.LogDiagnostic("[BRIDGE] Suppressed self-write in poller");
                     }
-
-                    if (_copyCount % ResetAfterCopies == 0)
+                    else
                     {
-                        var resetMsg = $"Scheduled reset after {_copyCount} copies";
-                        RaiseStatus(resetMsg);
-                        _diagnosticLogger?.LogInfo(resetMsg);
-                        TransitionState(MonitorState.Recovering_RdpclipRestarting, "scheduled_reset");
-                        ResetRdpClip();
+                        _copyCount++;
+
+                        var elapsed = (DateTime.Now - _startTime).TotalMinutes;
+                        var preview = current.Length > 50 ? current[..50] : current;
+                        preview = preview.Replace("\n", " ").Replace("\r", "");
+
+                        var status = $"Copy #{_copyCount} | {elapsed:F1} min | \"{preview}\"";
+                        RaiseStatus(status);
+
+                        if (_diagnosticsEnabled)
+                        {
+                            _diagnosticLogger?.LogPollingEvent($"{status}");
+
+                            if (_copyCount > 100)
+                                _diagnosticLogger?.LogWarning($"High copy count ({_copyCount}) - clipboard may be under stress");
+
+                            _diagnosticLogger?.LogInfo(RdpClipHealth.GetDiagnosticSummary());
+                        }
+
+                        // Notify ClipBridge of a genuine local clipboard change (no-op if the
+                        // listener path already raised it for this same text).
+                        RaiseClipboardTextChangedIfNew(current);
+
+                        if (_copyCount % ResetAfterCopies == 0)
+                        {
+                            var resetMsg = $"Scheduled reset after {_copyCount} copies";
+                            RaiseStatus(resetMsg);
+                            _diagnosticLogger?.LogInfo(resetMsg);
+                            TransitionState(MonitorState.Recovering_RdpclipRestarting, "scheduled_reset");
+                            ResetRdpClip();
+                        }
                     }
                 }
             }
@@ -586,8 +616,11 @@ public sealed class ClipboardMonitor : IDisposable
             ResetRdpClip();
         }
 
-        // Fast silence detection: if listener is quiet shortly after restart, it's broken
-        if (_lastRdpclipRestartTime != DateTime.MinValue && _listenerLastEventTime != DateTime.MinValue)
+        // Fast silence detection: if listener is quiet shortly after restart, it's broken.
+        // Gated on diagnostics: this listener-driven reset heuristic is a troubleshooting aid.
+        // The listener now runs unconditionally (for ClipBridge), so without this gate it would
+        // start resetting rdpclip on normal clipboard inactivity — preserve the original behavior.
+        if (_diagnosticsEnabled && _lastRdpclipRestartTime != DateTime.MinValue && _listenerLastEventTime != DateTime.MinValue)
         {
             var sinceRestart = DateTime.Now - _lastRdpclipRestartTime;
             var sinceLastEvent = DateTime.Now - _listenerLastEventTime;
@@ -602,8 +635,10 @@ public sealed class ClipboardMonitor : IDisposable
             }
         }
 
-        // If listener went quiet for >2 minutes, rdpclip sync is likely broken — reset it
-        if (_listenerLastEventTime != DateTime.MinValue)
+        // If listener went quiet for >2 minutes, rdpclip sync is likely broken — reset it.
+        // Gated on diagnostics (see note above) to preserve original behavior now that the
+        // listener runs unconditionally for ClipBridge.
+        if (_diagnosticsEnabled && _listenerLastEventTime != DateTime.MinValue)
         {
             var sinceLastEvent = DateTime.Now - _listenerLastEventTime;
             if (sinceLastEvent.TotalMinutes > 2)
@@ -622,6 +657,154 @@ public sealed class ClipboardMonitor : IDisposable
         StatusChanged?.Invoke(message);
     }
 
+    /// <summary>
+    /// Stable hash of clipboard text, shared by the anti-echo logic here and by ClipBridge so
+    /// both sides agree on identity. Used only for de-duplication, not security.
+    /// </summary>
+    public static string HashText(string text)
+    {
+        using var sha = SHA256.Create();
+        return Convert.ToHexString(sha.ComputeHash(Encoding.UTF8.GetBytes(text)));
+    }
+
+    /// <summary>
+    /// Records text that ClipBridge is about to write to the clipboard, so the resulting
+    /// change event is recognized as a self-write and suppressed. Called automatically by
+    /// <see cref="SetClipboardText"/>.
+    /// </summary>
+    public void NotifySelfWrite(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        string hash = HashText(text);
+        lock (_selfWriteLock)
+        {
+            _selfWrites.Enqueue((hash, DateTime.UtcNow));
+            TrimSelfWritesNoLock();
+        }
+    }
+
+    /// <summary>True if <paramref name="text"/> matches a recent bridge-applied self-write.</summary>
+    private bool IsRecentSelfWrite(string text)
+    {
+        string hash = HashText(text);
+        lock (_selfWriteLock)
+        {
+            TrimSelfWritesNoLock();
+            foreach (var w in _selfWrites)
+                if (w.Hash == hash)
+                    return true;
+            return false;
+        }
+    }
+
+    // Must be called while holding _selfWriteLock.
+    private void TrimSelfWritesNoLock()
+    {
+        var now = DateTime.UtcNow;
+        while (_selfWrites.Count > 0 && (now - _selfWrites.Peek().At).TotalSeconds > SelfWriteTtlSeconds)
+            _selfWrites.Dequeue();
+    }
+
+    /// <summary>
+    /// Raises <see cref="ClipboardTextChanged"/> for a genuine local change, skipping bridge
+    /// self-writes and texts already raised (listener and poller can both observe the same copy).
+    /// </summary>
+    private void RaiseClipboardTextChangedIfNew(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        string hash = HashText(text);
+        lock (_selfWriteLock)
+        {
+            TrimSelfWritesNoLock();
+            foreach (var w in _selfWrites)
+                if (w.Hash == hash)
+                    return; // our own write — never bridge it back
+            if (hash == _lastRaisedHash)
+                return; // already raised for this text
+            _lastRaisedHash = hash;
+        }
+
+        ClipboardTextChanged?.Invoke(new ClipboardTextChange { Text = text, Hash = hash });
+    }
+
+    /// <summary>
+    /// Writes text to the clipboard via Win32 under the shared clipboard lock, recording it as a
+    /// self-write first so it is not echoed back. Returns false on lock timeout or Win32 failure.
+    /// </summary>
+    public bool SetClipboardText(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        // Record BEFORE writing so the change event (which can fire within ~100ms) is suppressed.
+        NotifySelfWrite(text);
+
+        if (!Monitor.TryEnter(_clipboardAccessLock, 5000))
+        {
+            _diagnosticLogger?.LogWarning("[BRIDGE] SetClipboardText: clipboard lock timeout");
+            return false;
+        }
+
+        try
+        {
+            if (!NativeMethods.OpenClipboard(IntPtr.Zero))
+            {
+                _diagnosticLogger?.LogWarning("[BRIDGE] SetClipboardText: OpenClipboard failed");
+                return false;
+            }
+
+            try
+            {
+                NativeMethods.EmptyClipboard();
+
+                // CF_UNICODETEXT requires a null-terminated UTF-16 string. Zero-init the block so
+                // the trailing terminator is present.
+                byte[] bytes = Encoding.Unicode.GetBytes(text);
+                int byteCount = bytes.Length + 2; // + UTF-16 null terminator
+                IntPtr hMem = NativeMethods.GlobalAlloc(
+                    NativeMethods.GMEM_MOVEABLE | NativeMethods.GMEM_ZEROINIT, (UIntPtr)byteCount);
+                if (hMem == IntPtr.Zero)
+                {
+                    _diagnosticLogger?.LogWarning("[BRIDGE] SetClipboardText: GlobalAlloc failed");
+                    return false;
+                }
+
+                IntPtr target = NativeMethods.GlobalLock(hMem);
+                if (target == IntPtr.Zero)
+                {
+                    NativeMethods.GlobalFree(hMem);
+                    _diagnosticLogger?.LogWarning("[BRIDGE] SetClipboardText: GlobalLock failed");
+                    return false;
+                }
+                try { Marshal.Copy(bytes, 0, target, bytes.Length); }
+                finally { NativeMethods.GlobalUnlock(hMem); }
+
+                if (NativeMethods.SetClipboardData(NativeMethods.CF_UNICODETEXT, hMem) == IntPtr.Zero)
+                {
+                    // Ownership was NOT transferred — free it ourselves.
+                    NativeMethods.GlobalFree(hMem);
+                    _diagnosticLogger?.LogWarning("[BRIDGE] SetClipboardText: SetClipboardData failed");
+                    return false;
+                }
+
+                // Success: the system now owns hMem; do NOT free it.
+                _diagnosticLogger?.LogDiagnostic("[BRIDGE] Applied remote clipboard text");
+                return true;
+            }
+            finally
+            {
+                NativeMethods.CloseClipboard();
+            }
+        }
+        finally
+        {
+            Monitor.Exit(_clipboardAccessLock);
+        }
+    }
+
     public void Dispose()
     {
         if (!_disposed)
@@ -633,8 +816,26 @@ public sealed class ClipboardMonitor : IDisposable
                 DisableDiagnostics();
             }
 
+            if (_clipboardListener != null)
+            {
+                _clipboardListener.ClipboardChanged -= OnClipboardListenerChanged;
+                _clipboardListener.Dispose();
+                _clipboardListener = null;
+            }
+
             _timer.Dispose();
         }
     }
+}
+
+/// <summary>
+/// A genuine clipboard text change surfaced to ClipBridge.
+/// </summary>
+public sealed class ClipboardTextChange
+{
+    public string Text { get; init; } = "";
+
+    /// <summary>Hash of <see cref="Text"/> (see <see cref="ClipboardMonitor.HashText"/>).</summary>
+    public string Hash { get; init; } = "";
 }
 

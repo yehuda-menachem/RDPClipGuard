@@ -41,6 +41,16 @@ public sealed class ClipboardListener : IDisposable
     }
 
     /// <summary>
+    /// Wires (or clears) the diagnostic logger. Lets the always-on listener pick up logging
+    /// when diagnostic mode is toggled, without being recreated.
+    /// </summary>
+    public void SetDiagnosticLogger(DiagnosticLogger? logger)
+    {
+        _diagnosticLogger = logger;
+        _window.SetDiagnosticLogger(logger);
+    }
+
+    /// <summary>
     /// Starts listening for clipboard changes. Call this after creating the listener.
     /// </summary>
     public void Start()
@@ -247,6 +257,8 @@ public sealed class ClipboardListener : IDisposable
                 _diagnosticLogger?.LogError($"[LISTENER] Failed to create hidden window: {ex.Message}");
             }
         }
+
+        public void SetDiagnosticLogger(DiagnosticLogger? logger) => _diagnosticLogger = logger;
 
         public bool RegisterForNotifications()
         {

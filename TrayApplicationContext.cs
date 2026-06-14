@@ -4,6 +4,7 @@ using System.Drawing.Drawing2D;
 using System.Linq;
 using System.Windows.Forms;
 using Microsoft.Win32;
+using RDPClipGuard.ClipBridge;
 
 namespace RDPClipGuard;
 
@@ -15,6 +16,10 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem _copyCountItem;
     private readonly ToolStripMenuItem _startupItem;
     private readonly ToolStripMenuItem _diagnosticItem;
+    private readonly ToolStripMenuItem _bridgeStatusItem;
+    private readonly ToolStripMenuItem _bridgeSettingsItem;
+    private readonly BridgeManager _bridgeManager;
+    private readonly BridgeSettings _bridgeSettings;
     private string _lastStatus = "Starting...";
     private readonly bool _isRemoteSession;
     private readonly bool _isShadowSession;
@@ -34,6 +39,12 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         _monitor = new ClipboardMonitor(_isShadowSession);
         _monitor.StatusChanged += OnStatusChanged;
+
+        // ClipBridge: encrypted clipboard channel, wired to the always-on clipboard listener.
+        _bridgeManager = new BridgeManager();
+        _bridgeManager.Attach(_monitor);
+        _bridgeManager.StatusChanged += OnBridgeStatus;
+        _bridgeSettings = BridgeSettings.Load();
 
         _statusItem = new ToolStripMenuItem("Status: Starting...")
         {
@@ -59,6 +70,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         };
         _diagnosticItem.Click += OnToggleDiagnostic;
 
+        _bridgeStatusItem = new ToolStripMenuItem("⚪ Not connected") { Enabled = false };
+        _bridgeSettingsItem = new ToolStripMenuItem("Bridge Settings…");
+        _bridgeSettingsItem.Click += OnBridgeSettings;
+
         // Auto-enable startup on first run
         if (!IsStartupEnabled())
         {
@@ -79,6 +94,11 @@ public sealed class TrayApplicationContext : ApplicationContext
         contextMenu.Items.Add("Open Log File", null, OnOpenLogFile);
         contextMenu.Items.Add("Open Log Folder", null, OnOpenLogFolder);
         contextMenu.Items.Add(new ToolStripSeparator());
+        var bridgeMenu = new ToolStripMenuItem("🔗 ClipBridge");
+        bridgeMenu.DropDownItems.Add(_bridgeStatusItem);
+        bridgeMenu.DropDownItems.Add(_bridgeSettingsItem);
+        contextMenu.Items.Add(bridgeMenu);
+        contextMenu.Items.Add(new ToolStripSeparator());
         contextMenu.Items.Add("Exit", null, OnExit);
 
         _trayIcon = new NotifyIcon
@@ -97,6 +117,10 @@ public sealed class TrayApplicationContext : ApplicationContext
         };
 
         _monitor.Start();
+
+        // Auto-connect the bridge if it was configured to do so.
+        if (_bridgeSettings.AutoConnect && _bridgeSettings.IsConfigured)
+            _ = _bridgeManager.StartAsync(_bridgeSettings);
     }
 
     private void OnStatusChanged(string message)
@@ -272,6 +296,45 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private void OnBridgeSettings(object? sender, EventArgs e)
+    {
+        using var form = new BridgeSettingsForm(_bridgeSettings, _bridgeManager);
+        form.ShowDialog();
+    }
+
+    private void OnBridgeStatus(BridgeStatus status)
+    {
+        try
+        {
+            // Marshal to the UI thread only when the menu is currently displayed; otherwise the
+            // item isn't rendered and setting its text directly is safe (mirrors OnStatusChanged).
+            var parent = _bridgeStatusItem.GetCurrentParent();
+            if (parent != null && parent.InvokeRequired)
+                parent.BeginInvoke(() => UpdateBridgeUI(status));
+            else
+                UpdateBridgeUI(status);
+        }
+        catch
+        {
+            // UI may be tearing down
+        }
+    }
+
+    private void UpdateBridgeUI(BridgeStatus status)
+    {
+        string symbol = status.State switch
+        {
+            BridgeState.Connected => "🟢",
+            BridgeState.Listening => "🟡",
+            BridgeState.Connecting => "🟡",
+            BridgeState.Error => "🔴",
+            BridgeState.Disconnected => "🔴",
+            _ => "⚪"
+        };
+        var msg = status.Message.Length > 50 ? status.Message[..50] + "..." : status.Message;
+        _bridgeStatusItem.Text = $"{symbol} {msg}";
+    }
+
     private void OnOpenLogFile(object? sender, EventArgs e)
     {
         if (!_monitor.DiagnosticsEnabled)
@@ -387,6 +450,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            _bridgeManager.Dispose();
             _monitor.Dispose();
             _trayIcon.Dispose();
         }

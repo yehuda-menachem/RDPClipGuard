@@ -2,6 +2,23 @@
 
 All notable changes to RDPClipGuard are documented in this file.
 
+## [Unreleased]
+
+### Added
+- **ClipBridge — encrypted clipboard sync channel**: An independent TCP channel that syncs clipboard text between the LOCAL and REMOTE machines, separate from `rdpclip` redirection. Works whether RDP clipboard redirection is enabled (coexistence) or disabled by policy (replacement).
+  - **AES-256-GCM** encryption with **PBKDF2-SHA256** key derivation from a shared password
+  - Salt-first handshake; a wrong password is rejected and the connection dropped
+  - Length-prefixed framing with an 8 MB cap; anti-replay via timestamp tolerance + sequence de-duplication
+  - **Content-hash anti-echo** so the same text is never looped back, in either mode
+  - Server accept-loop + client auto-reconnect with exponential backoff (2s → 60s)
+  - Password stored at rest with **Windows DPAPI** (current user); settings in `%APPDATA%\RDPClipGuard\bridge.json`
+  - New **🔗 ClipBridge** tray submenu with live status and a settings dialog
+
+### Changed
+- **Always-on clipboard listener**: the event-based `WM_CLIPBOARDUPDATE` listener now runs regardless of Diagnostic Mode (previously diagnostics-only) so ClipBridge receives near-instant notifications. The listener-driven rdpclip-reset heuristics remain gated to Diagnostic Mode, preserving the default reset behavior.
+
+---
+
 ## [2.0.1] - 2026-03-04
 
 ### Fixed

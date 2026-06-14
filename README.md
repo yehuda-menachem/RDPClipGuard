@@ -22,6 +22,7 @@ RDPClipGuard runs silently in the system tray and:
 - **Prevents duplicate instances** - only one instance can run at a time (with smart mutex timeout handling)
 - **Starts with Windows** (optional, configured during installation)
 - **Diagnostic Mode** - detailed logging of clipboard activity, rdpclip health, and RDP sync issues
+- **ClipBridge** - optional encrypted TCP channel that syncs clipboard text between machines independently of `rdpclip` (see [ClipBridge](#clipbridge-encrypted-clipboard-sync))
 - **Avoids clipboard deadlock** - skips file drops and validates rdpclip is fully operational before resuming
 
 ## System Tray Features
@@ -34,6 +35,7 @@ RDPClipGuard runs silently in the system tray and:
   - **🔍 Diagnostic Mode** - enable detailed logging (see [Diagnostic Mode](#diagnostic-mode))
   - **Open Log File** - view the latest diagnostic log
   - **Open Log Folder** - browse all diagnostic logs
+  - **🔗 ClipBridge** - encrypted clipboard sync settings (see [ClipBridge](#clipbridge-encrypted-clipboard-sync))
   - **Exit** - close the application
 
 ## Diagnostic Mode
@@ -56,6 +58,26 @@ Example diagnostic output:
 [12:34:56.791] [INFO] ℹ️  rdpclip: PID=1234 | 4MB | Handles=89 | ✓ Responding | Uptime=5.2min
 [12:34:57.800] [OK] ✅ Hash matches LOCAL machine ✓
 ```
+
+## ClipBridge (encrypted clipboard sync)
+
+ClipBridge is an **independent, encrypted channel** for syncing clipboard **text** between the LOCAL and REMOTE machines over TCP — separate from the built-in `rdpclip` redirection. Use it when RDP clipboard redirection is blocked by policy (replacement), or alongside it (coexistence) — the anti-echo logic is content-based, so it is correct either way.
+
+- **AES-256-GCM** encryption with **PBKDF2-SHA256** key derivation from a shared password
+- A wrong password is rejected during the handshake
+- **Anti-echo** by content hash — the same text is never looped back
+- **Auto-reconnect** with exponential backoff; the server accepts reconnecting clients
+- Password stored encrypted at rest via **Windows DPAPI** (current user)
+
+Run the **same executable** on both machines and configure it from the tray menu: **🔗 ClipBridge → Bridge Settings…**
+
+- Pick a role: **LOCAL (Server)** waits for a connection; **REMOTE (Client)** connects to the server's IP
+- Set a matching **port** (default `9512`) and the same shared **password** on both machines
+- Optionally enable **Connect automatically on startup**
+
+Settings are saved to `%APPDATA%\RDPClipGuard\bridge.json` (the password is DPAPI-encrypted, never stored in plaintext).
+
+> **Network note:** the server side must be reachable on the chosen TCP port — allow it through the Windows Firewall (and any RDP gateway/NAT in between).
 
 ## Installation
 
